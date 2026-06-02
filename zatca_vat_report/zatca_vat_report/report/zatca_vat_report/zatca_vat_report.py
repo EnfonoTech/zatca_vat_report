@@ -347,11 +347,15 @@ def get_purchase_vat_split(filters, accounts=None):
     if filters is None:
         filters = {}
 
+    settings = frappe.get_single("ZATCA VAT Report Settings")
+
     conditions = [
         "inv.docstatus = 1",
         "inv.posting_date BETWEEN %(from_date)s AND %(to_date)s",
-        "(inv.bill_date IS NULL OR inv.bill_date >= %(from_date)s)",
     ]
+
+    if settings.get("validate_supplier_invoice_date"):
+        conditions.append("(inv.bill_date IS NULL OR inv.bill_date >= %(from_date)s)")
 
     values = {}
     if filters.get("company"):

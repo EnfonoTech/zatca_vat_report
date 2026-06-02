@@ -207,8 +207,10 @@ def _classify_bucket(base_info, bucket_name):
 	return flt(base_info.get("purchase_base"))
 
 
-def _get_purchase_bucket_base_map(from_date, to_date, company):
+def _get_purchase_bucket_base_map(from_date, to_date, company, validate_bill_date=False):
 	where_clause, values = _base_conditions(from_date, to_date, company, "pi")
+	if validate_bill_date:
+		where_clause += " AND (pi.bill_date IS NULL OR pi.bill_date >= %(from_date)s)"
 	# Keep logic consistent with main report (account_type with parent fallback)
 	base_rows = frappe.db.sql(
 		f"""
@@ -329,10 +331,15 @@ def _get_purchase_detail(from_date, to_date, company, tax_accounts, bucket):
 	if not tax_accounts:
 		return []
 
-	base_map, values = _get_purchase_bucket_base_map(from_date, to_date, company)
+	settings = frappe.get_single("ZATCA VAT Report Settings")
+	validate_bill_date = bool(settings.get("validate_supplier_invoice_date"))
+
+	base_map, values = _get_purchase_bucket_base_map(from_date, to_date, company, validate_bill_date)
 	values["accounts"] = tuple(tax_accounts)
 
 	where_clause, _ = _base_conditions(from_date, to_date, company, "pi")
+	if validate_bill_date:
+		where_clause += " AND (pi.bill_date IS NULL OR pi.bill_date >= %(from_date)s)"
 
 	# Pull selected tax rows for invoices in this period and tax accounts
 	tax_rows = frappe.db.sql(

@@ -8,6 +8,7 @@
   "sales_section",
   "account_groups",
   "purchase_section",
+  "validate_supplier_invoice_date",
   "purchase_account_groups",
   "expenses_section",
   "expense_account_groups"
@@ -28,6 +29,13 @@
    "fieldname": "purchase_section",
    "fieldtype": "Section Break",
    "label": "Purchase"
+  },
+  {
+   "default": "0",
+   "description": "If enabled, purchase invoices whose supplier invoice date (Bill Date) falls before the report From Date will be excluded from VAT calculation.",
+   "fieldname": "validate_supplier_invoice_date",
+   "fieldtype": "Check",
+   "label": "Validate Supplier Invoice Date"
   },
   {
    "fieldname": "purchase_account_groups",
@@ -51,7 +59,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-01-24 14:10:40.685475",
+ "modified": "2026-06-02 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Zatca Vat Report",
  "name": "ZATCA VAT Report Settings",
