@@ -31,7 +31,7 @@
    "label": "Purchase"
   },
   {
-   "default": "0",
+   "default": "1",
    "description": "If enabled, purchase invoices whose supplier invoice date (Bill Date) falls before the report From Date will be excluded from VAT calculation.",
    "fieldname": "validate_supplier_invoice_date",
    "fieldtype": "Check",
