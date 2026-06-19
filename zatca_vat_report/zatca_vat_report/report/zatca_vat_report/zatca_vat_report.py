@@ -187,12 +187,26 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
     conditions.append("inv.docstatus = 1")
     conditions.append("inv.posting_date BETWEEN %(from_date)s AND %(to_date)s")
 
-    if is_sales and frappe.db.exists("DocType", "ZATCA Integration Log"):
+    if is_sales and frappe.db.exists("DocType", "Sales Invoice Additional Fields"):
+        conditions.append("""
+            inv.name NOT IN (
+                SELECT siaf.sales_invoice
+                FROM `tabSales Invoice Additional Fields` siaf
+                WHERE siaf.integration_status = 'Rejected'
+                AND siaf.is_latest = 1
+            )
+        """)
+    elif is_sales and frappe.db.exists("DocType", "ZATCA Integration Log"):
         conditions.append("""
             inv.name NOT IN (
                 SELECT zil.invoice_reference
                 FROM `tabZATCA Integration Log` zil
                 WHERE zil.status = 'Rejected'
+                AND zil.creation = (
+                    SELECT MAX(zil2.creation)
+                    FROM `tabZATCA Integration Log` zil2
+                    WHERE zil2.invoice_reference = zil.invoice_reference
+                )
             )
         """)
 
@@ -330,7 +344,7 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
             AND acc_master.tax_rate = %(expected_tax_rate)s
         GROUP BY tax.account_head
     """
-    
+
     values["expected_tax_rate"] = tax_rate
 
     return frappe.db.sql(query, values, as_dict=True)
