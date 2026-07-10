@@ -189,12 +189,26 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
     conditions.append("inv.docstatus = 1")
     conditions.append("inv.posting_date BETWEEN %(from_date)s AND %(to_date)s")
 
-    if is_sales and frappe.db.exists("DocType", "ZATCA Integration Log"):
+    if is_sales and frappe.db.exists("DocType", "Sales Invoice Additional Fields"):
+        conditions.append("""
+            inv.name NOT IN (
+                SELECT siaf.sales_invoice
+                FROM `tabSales Invoice Additional Fields` siaf
+                WHERE siaf.integration_status = 'Rejected'
+                AND siaf.is_latest = 1
+            )
+        """)
+    elif is_sales and frappe.db.exists("DocType", "ZATCA Integration Log"):
         conditions.append("""
             inv.name NOT IN (
                 SELECT zil.invoice_reference
                 FROM `tabZATCA Integration Log` zil
                 WHERE zil.status = 'Rejected'
+                AND zil.creation = (
+                    SELECT MAX(zil2.creation)
+                    FROM `tabZATCA Integration Log` zil2
+                    WHERE zil2.invoice_reference = zil.invoice_reference
+                )
             )
         """)
 
@@ -332,7 +346,7 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
             AND acc_master.tax_rate = %(expected_tax_rate)s
         GROUP BY tax.account_head
     """
-    
+
     values["expected_tax_rate"] = tax_rate
 
     return frappe.db.sql(query, values, as_dict=True)
@@ -349,12 +363,16 @@ def get_purchase_vat_split(filters, accounts=None):
     if filters is None:
         filters = {}
 
+    settings = frappe.get_single("ZATCA VAT Report Settings")
+
     conditions = [
         "inv.docstatus = 1",
         "inv.posting_date BETWEEN %(from_date)s AND %(to_date)s",
-        "(inv.bill_date IS NULL OR inv.bill_date >= %(from_date)s)",
         "COALESCE(inv.custom_bayan_value, 0) = 0",
     ]
+
+    if settings.get("validate_supplier_invoice_date"):
+        conditions.append("(inv.bill_date IS NULL OR inv.bill_date >= %(from_date)s)")
 
     values = {}
     if filters.get("company"):
@@ -382,11 +400,12 @@ def get_purchase_vat_split(filters, accounts=None):
     # - Expense: account_type in
     #            ('Expense Account', 'Direct Expense', 'Indirect Expense',
     #             'Depreciation', 'Service Received But Not Billed',
-    #             'Expenses Included In Valuation', 'Chargeable')
-    #            OR root_type = 'Expense'
+    #             'Expenses Included In Valuation', 'Chargeable',
+    #             'Cost of Goods Sold')
+    #            OR (account_type is null/unmapped AND root_type = 'Expense')
     # - Purchase (stock): account_type in
-    #            ('Cost of Goods Sold', 'Stock', 'Stock Adjustment',
-    #             'Stock Received But Not Billed')
+    #            ('Stock', 'Stock Adjustment', 'Stock Received But Not Billed')
+    #            OR (account_type is null/unmapped AND root_type != 'Expense')
     base_query = f"""
         SELECT
             inv.name AS invoice,
@@ -413,9 +432,33 @@ def get_purchase_vat_split(filters, accounts=None):
                             'Depreciation',
                             'Service Received But Not Billed',
                             'Expenses Included In Valuation',
-                            'Chargeable'
+                            'Chargeable',
+                            'Cost of Goods Sold'
                          )
-                         OR COALESCE(acc.root_type, acc_parent.root_type) = 'Expense'
+                         OR (
+                            (
+                                COALESCE(acc.account_type, acc_parent.account_type) IS NULL
+                                OR COALESCE(acc.account_type, acc_parent.account_type) NOT IN (
+                                    'Fixed Asset',
+                                    'Capital Work in Progress',
+                                    'Accumulated Depreciation',
+                                    'Expenses Included In Asset Valuation',
+                                    'Asset Received But Not Billed',
+                                    'Expense Account',
+                                    'Direct Expense',
+                                    'Indirect Expense',
+                                    'Depreciation',
+                                    'Service Received But Not Billed',
+                                    'Expenses Included In Valuation',
+                                    'Chargeable',
+                                    'Cost of Goods Sold',
+                                    'Stock',
+                                    'Stock Adjustment',
+                                    'Stock Received But Not Billed'
+                                )
+                            )
+                            AND COALESCE(acc.root_type, acc_parent.root_type) = 'Expense'
+                         )
                     THEN pii.base_net_amount
                     ELSE 0
                 END
@@ -423,10 +466,33 @@ def get_purchase_vat_split(filters, accounts=None):
             SUM(
                 CASE
                     WHEN COALESCE(acc.account_type, acc_parent.account_type) IN (
-                        'Cost of Goods Sold',
                         'Stock',
                         'Stock Adjustment',
                         'Stock Received But Not Billed'
+                    )
+                    OR (
+                        (
+                            COALESCE(acc.account_type, acc_parent.account_type) IS NULL
+                            OR COALESCE(acc.account_type, acc_parent.account_type) NOT IN (
+                                'Fixed Asset',
+                                'Capital Work in Progress',
+                                'Accumulated Depreciation',
+                                'Expenses Included In Asset Valuation',
+                                'Asset Received But Not Billed',
+                                'Expense Account',
+                                'Direct Expense',
+                                'Indirect Expense',
+                                'Depreciation',
+                                'Service Received But Not Billed',
+                                'Expenses Included In Valuation',
+                                'Chargeable',
+                                'Cost of Goods Sold',
+                                'Stock',
+                                'Stock Adjustment',
+                                'Stock Received But Not Billed'
+                            )
+                        )
+                        AND COALESCE(acc.root_type, acc_parent.root_type) != 'Expense'
                     )
                     THEN pii.base_net_amount
                     ELSE 0
@@ -461,7 +527,7 @@ def get_purchase_vat_split(filters, accounts=None):
             inv.name AS invoice,
             inv.is_return,
             tax.account_head,
-            tax.tax_amount,
+            COALESCE(tax.base_tax_amount_after_discount_amount, tax.base_tax_amount) AS base_tax_amount,
             COALESCE(NULLIF(tax.rate, 0), tax_acc.tax_rate, 0) AS tax_rate
         FROM `tabPurchase Invoice` inv
         INNER JOIN `tabPurchase Taxes and Charges` tax
@@ -482,7 +548,7 @@ def get_purchase_vat_split(filters, accounts=None):
         f"""
         SELECT
             inv.name AS invoice,
-            tax.tax_amount,
+            COALESCE(tax.base_tax_amount_after_discount_amount, tax.base_tax_amount) AS base_tax_amount,
             COALESCE(NULLIF(tax.rate, 0), tax_acc.tax_rate, 0) AS tax_rate
         FROM `tabPurchase Invoice` inv
         INNER JOIN `tabPurchase Taxes and Charges` tax ON tax.parent = inv.name
@@ -503,7 +569,7 @@ def get_purchase_vat_split(filters, accounts=None):
         tax_rate = flt(row.tax_rate, 2) or 0
         if tax_rate > 0:
             base_from_positive_rate[inv] = base_from_positive_rate.get(inv, 0) + (
-                abs(flt(row.tax_amount, 2)) / (tax_rate / 100)
+                abs(flt(row.base_tax_amount, 2)) / (tax_rate / 100)
             )
         else:
             zero_rate_row_count[inv] = zero_rate_row_count.get(inv, 0) + 1
@@ -559,11 +625,11 @@ def get_purchase_vat_split(filters, accounts=None):
         # Taxable base for this tax row: from tax_amount/rate when rate > 0, else zero-rated base
         tax_rate = flt(row.tax_rate, 2) or 0
         if tax_rate > 0:
-            row_base = abs(flt(row.tax_amount, 2)) / (tax_rate / 100)
+            row_base = abs(flt(row.base_tax_amount, 2)) / (tax_rate / 100)
         else:
             row_base = zero_rated_base_per_row.get(row.invoice, 0)
 
-        net_vat = flt(row.tax_amount, 2) or 0
+        net_vat = flt(row.base_tax_amount, 2) or 0
         if row.is_return:
             net_vat = -abs(net_vat)
 

@@ -129,7 +129,7 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 			si.customer_name,
 			cust.custom_vat_registration_number,
 			si.is_return,
-			stc.tax_amount,
+			COALESCE(stc.base_tax_amount_after_discount_amount, stc.base_tax_amount) AS base_tax_amount,
 			COALESCE(NULLIF(stc.rate, 0), acc.tax_rate, 0) AS tax_rate
 		FROM `tabSales Invoice` si
 		INNER JOIN `tabSales Taxes and Charges` stc ON stc.parent = si.name
@@ -149,7 +149,7 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 		f"""
 		SELECT
 			si.name AS invoice,
-			stc.tax_amount,
+			COALESCE(stc.base_tax_amount_after_discount_amount, stc.base_tax_amount) AS base_tax_amount,
 			COALESCE(NULLIF(stc.rate, 0), acc.tax_rate, 0) AS tax_rate
 		FROM `tabSales Invoice` si
 		INNER JOIN `tabSales Taxes and Charges` stc ON stc.parent = si.name
@@ -168,7 +168,9 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 		inv = r.invoice
 		rate = flt(r.tax_rate) or 0
 		if rate > 0:
-			base_from_positive_rate[inv] = base_from_positive_rate.get(inv, 0) + (abs(flt(r.tax_amount)) / (rate / 100))
+			base_from_positive_rate[inv] = base_from_positive_rate.get(inv, 0) + (
+				abs(flt(r.base_tax_amount)) / (rate / 100)
+			)
 		else:
 			zero_rate_row_count[inv] = zero_rate_row_count.get(inv, 0) + 1
 
@@ -189,7 +191,9 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 	zero_base_per_row = {}
 	for inv, total_base in invoice_base.items():
 		covered = base_from_positive_rate.get(inv, 0)
-		zero_base = max(0, flt(total_base) - covered)
+		# Returns can carry negative base_net_total; use absolute base magnitude
+		# so 0% taxable share is still computed correctly.
+		zero_base = max(0, abs(flt(total_base)) - covered)
 		n_zero = max(1, zero_rate_row_count.get(inv, 0))
 		zero_base_per_row[inv] = zero_base / n_zero
 
@@ -199,7 +203,7 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 		inv = r.invoice
 		rate = flt(r.tax_rate) or 0
 		if rate > 0:
-			row_base = abs(flt(r.tax_amount)) / (rate / 100)
+			row_base = abs(flt(r.base_tax_amount)) / (rate / 100)
 		else:
 			row_base = zero_base_per_row.get(inv, 0)
 
@@ -207,7 +211,7 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 		if r.is_return:
 			row_base = -abs(row_base)
 
-		vat = flt(r.tax_amount) or 0
+		vat = flt(r.base_tax_amount) or 0
 		if r.is_return:
 			vat = -abs(vat)
 
@@ -243,8 +247,10 @@ def _classify_bucket(base_info, bucket_name):
 	return flt(base_info.get("purchase_base"))
 
 
-def _get_purchase_bucket_base_map(from_date, to_date, company):
+def _get_purchase_bucket_base_map(from_date, to_date, company, validate_bill_date=False):
 	where_clause, values = _base_conditions(from_date, to_date, company, "pi")
+	if validate_bill_date:
+		where_clause += " AND (pi.bill_date IS NULL OR pi.bill_date >= %(from_date)s)"
 	# Keep logic consistent with main report (account_type with parent fallback)
 	base_rows = frappe.db.sql(
 		f"""
@@ -277,9 +283,33 @@ def _get_purchase_bucket_base_map(from_date, to_date, company):
 						'Depreciation',
 						'Service Received But Not Billed',
 						'Expenses Included In Valuation',
-						'Chargeable'
+						'Chargeable',
+						'Cost of Goods Sold'
 					)
-					OR COALESCE(acc.root_type, acc_parent.root_type) = 'Expense'
+					OR (
+						(
+							COALESCE(acc.account_type, acc_parent.account_type) IS NULL
+							OR COALESCE(acc.account_type, acc_parent.account_type) NOT IN (
+								'Fixed Asset',
+								'Capital Work in Progress',
+								'Accumulated Depreciation',
+								'Expenses Included In Asset Valuation',
+								'Asset Received But Not Billed',
+								'Expense Account',
+								'Direct Expense',
+								'Indirect Expense',
+								'Depreciation',
+								'Service Received But Not Billed',
+								'Expenses Included In Valuation',
+								'Chargeable',
+								'Cost of Goods Sold',
+								'Stock',
+								'Stock Adjustment',
+								'Stock Received But Not Billed'
+							)
+						)
+						AND COALESCE(acc.root_type, acc_parent.root_type) = 'Expense'
+					)
 					THEN pii.base_net_amount
 					ELSE 0
 				END
@@ -287,10 +317,33 @@ def _get_purchase_bucket_base_map(from_date, to_date, company):
 			SUM(
 				CASE
 					WHEN COALESCE(acc.account_type, acc_parent.account_type) IN (
-						'Cost of Goods Sold',
 						'Stock',
 						'Stock Adjustment',
 						'Stock Received But Not Billed'
+					)
+					OR (
+						(
+							COALESCE(acc.account_type, acc_parent.account_type) IS NULL
+							OR COALESCE(acc.account_type, acc_parent.account_type) NOT IN (
+								'Fixed Asset',
+								'Capital Work in Progress',
+								'Accumulated Depreciation',
+								'Expenses Included In Asset Valuation',
+								'Asset Received But Not Billed',
+								'Expense Account',
+								'Direct Expense',
+								'Indirect Expense',
+								'Depreciation',
+								'Service Received But Not Billed',
+								'Expenses Included In Valuation',
+								'Chargeable',
+								'Cost of Goods Sold',
+								'Stock',
+								'Stock Adjustment',
+								'Stock Received But Not Billed'
+							)
+						)
+						AND COALESCE(acc.root_type, acc_parent.root_type) != 'Expense'
 					)
 					THEN pii.base_net_amount
 					ELSE 0
@@ -318,10 +371,15 @@ def _get_purchase_detail(from_date, to_date, company, tax_accounts, bucket):
 	if not tax_accounts:
 		return []
 
-	base_map, values = _get_purchase_bucket_base_map(from_date, to_date, company)
+	settings = frappe.get_single("ZATCA VAT Report Settings")
+	validate_bill_date = bool(settings.get("validate_supplier_invoice_date"))
+
+	base_map, values = _get_purchase_bucket_base_map(from_date, to_date, company, validate_bill_date)
 	values["accounts"] = tuple(tax_accounts)
 
 	where_clause, _ = _base_conditions(from_date, to_date, company, "pi")
+	if validate_bill_date:
+		where_clause += " AND (pi.bill_date IS NULL OR pi.bill_date >= %(from_date)s)"
 
 	# Pull selected tax rows for invoices in this period and tax accounts
 	tax_rows = frappe.db.sql(
@@ -329,7 +387,7 @@ def _get_purchase_detail(from_date, to_date, company, tax_accounts, bucket):
 		SELECT
 			pi.name AS invoice,
 			pi.is_return,
-			ptc.tax_amount,
+			COALESCE(ptc.base_tax_amount_after_discount_amount, ptc.base_tax_amount) AS base_tax_amount,
 			COALESCE(NULLIF(ptc.rate, 0), acc.tax_rate, 0) AS tax_rate
 		FROM `tabPurchase Invoice` pi
 		INNER JOIN `tabPurchase Taxes and Charges` ptc ON ptc.parent = pi.name
@@ -349,7 +407,7 @@ def _get_purchase_detail(from_date, to_date, company, tax_accounts, bucket):
 		f"""
 		SELECT
 			pi.name AS invoice,
-			ptc.tax_amount,
+			COALESCE(ptc.base_tax_amount_after_discount_amount, ptc.base_tax_amount) AS base_tax_amount,
 			COALESCE(NULLIF(ptc.rate, 0), acc.tax_rate, 0) AS tax_rate
 		FROM `tabPurchase Invoice` pi
 		INNER JOIN `tabPurchase Taxes and Charges` ptc ON ptc.parent = pi.name
@@ -368,7 +426,9 @@ def _get_purchase_detail(from_date, to_date, company, tax_accounts, bucket):
 		inv = r.invoice
 		rate = flt(r.tax_rate) or 0
 		if rate > 0:
-			base_from_positive_rate[inv] = base_from_positive_rate.get(inv, 0) + (abs(flt(r.tax_amount)) / (rate / 100))
+			base_from_positive_rate[inv] = base_from_positive_rate.get(inv, 0) + (
+				abs(flt(r.base_tax_amount)) / (rate / 100)
+			)
 		else:
 			zero_rate_row_count[inv] = zero_rate_row_count.get(inv, 0) + 1
 
@@ -406,12 +466,12 @@ def _get_purchase_detail(from_date, to_date, company, tax_accounts, bucket):
 
 		rate = flt(r.tax_rate) or 0
 		if rate > 0:
-			row_base = abs(flt(r.tax_amount)) / (rate / 100)
+			row_base = abs(flt(r.base_tax_amount)) / (rate / 100)
 		else:
 			row_base = zero_base_per_row.get(r.invoice, 0)
 
 		base_share = row_base * ratio
-		vat_share = abs(flt(r.tax_amount)) * ratio
+		vat_share = abs(flt(r.base_tax_amount)) * ratio
 
 		# Returns: negate both base and VAT
 		if r.is_return:
