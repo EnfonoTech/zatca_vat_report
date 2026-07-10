@@ -249,6 +249,9 @@ def _classify_bucket(base_info, bucket_name):
 
 def _get_purchase_bucket_base_map(from_date, to_date, company, validate_bill_date=False):
 	where_clause, values = _base_conditions(from_date, to_date, company, "pi")
+	# Bayan invoices are excluded from the purchase split (main report parity);
+	# they appear only in the Bayan section.
+	where_clause += " AND COALESCE(pi.custom_bayan_value, 0) = 0"
 	if validate_bill_date:
 		where_clause += " AND (pi.bill_date IS NULL OR pi.bill_date >= %(from_date)s)"
 	# Keep logic consistent with main report (account_type with parent fallback)
@@ -378,6 +381,7 @@ def _get_purchase_detail(from_date, to_date, company, tax_accounts, bucket):
 	values["accounts"] = tuple(tax_accounts)
 
 	where_clause, _ = _base_conditions(from_date, to_date, company, "pi")
+	where_clause += " AND COALESCE(pi.custom_bayan_value, 0) = 0"
 	if validate_bill_date:
 		where_clause += " AND (pi.bill_date IS NULL OR pi.bill_date >= %(from_date)s)"
 
