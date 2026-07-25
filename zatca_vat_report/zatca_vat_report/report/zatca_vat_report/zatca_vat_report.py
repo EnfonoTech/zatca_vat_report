@@ -112,17 +112,14 @@ def get_expense_vat_from_journal_entries(filters, accounts):
 
     values.update(filters)
 
+    # Only debit entries on the VAT account represent real new expense VAT.
+    # Credits on this account are reclassifications (e.g. moving the balance
+    # to VAT payable), not a reduction of expense VAT, so they're excluded.
+    conditions.append("jea.debit > 0")
+
     query = f"""
         SELECT
-            IFNULL(
-                SUM(
-                    CASE
-                        WHEN jea.debit > 0 THEN jea.debit
-                        WHEN jea.credit > 0 THEN -jea.credit
-                        ELSE 0
-                    END
-                ), 0
-            ) AS net_amount
+            IFNULL(SUM(jea.debit), 0) AS net_amount
         FROM `tabJournal Entry` je
         INNER JOIN `tabJournal Entry Account` jea
             ON jea.parent = je.name
@@ -834,7 +831,7 @@ def get_data(filters):
         expense_total += net_vat
 
         data.append({
-            "title": label,
+            "title": get_detail_link(label, "Expense", info.get("group_name") or label, filters),
             "amount": None,
             "adjustment": None,
             "net_vat_amount": net_vat

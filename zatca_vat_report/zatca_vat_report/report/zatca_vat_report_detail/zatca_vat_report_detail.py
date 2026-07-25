@@ -29,6 +29,11 @@ def execute(filters=None):
 		data = _get_sales_detail(from_date, to_date, company, accounts)
 		return columns, data
 
+	if section == "Expense":
+		columns = _get_columns("Expense")
+		data = _get_expense_detail(from_date, to_date, company, accounts)
+		return columns, data
+
 	# Purchase
 	bucket = (filters.get("bucket") or "Purchase").strip()
 	columns = _get_columns("Purchase")
@@ -48,6 +53,16 @@ def _get_columns(section: str):
 			{"fieldname": "vat_amount", "label": "VAT", "fieldtype": "Currency", "width": 120},
 			{"fieldname": "grand_total", "label": "Grand Total", "fieldtype": "Currency", "width": 130},
 			{"fieldname": "is_return", "label": "Is Return", "fieldtype": "Check", "width": 90},
+		]
+
+	if section == "Expense":
+		return [
+			{"fieldname": "journal_entry", "label": "Journal Entry", "fieldtype": "Link", "options": "Journal Entry", "width": 140},
+			{"fieldname": "posting_date", "label": "Posting Date", "fieldtype": "Date", "width": 110},
+			{"fieldname": "account", "label": "Account", "fieldtype": "Link", "options": "Account", "width": 180},
+			{"fieldname": "against_account", "label": "Against Account", "fieldtype": "Data", "width": 200},
+			{"fieldname": "user_remark", "label": "Remark", "fieldtype": "Data", "width": 200},
+			{"fieldname": "vat_amount", "label": "VAT (Debit)", "fieldtype": "Currency", "width": 130},
 		]
 
 	return [
@@ -196,6 +211,39 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 		rec["grand_total"] = flt(rec["base_amount"]) + flt(rec["vat_amount"])
 	result.sort(key=lambda x: (x.get("posting_date") or "", x.get("invoice") or ""))
 	return result
+
+
+def _get_expense_detail(from_date, to_date, company, accounts):
+	if not accounts:
+		return []
+
+	where_clause, values = _base_conditions(from_date, to_date, company, "je")
+	values["accounts"] = tuple(accounts)
+
+	# Only debit entries are real expense VAT (see get_expense_vat_from_journal_entries
+	# in the summary report for why credits on this account are excluded).
+	rows = frappe.db.sql(
+		f"""
+		SELECT
+			je.name AS journal_entry,
+			je.posting_date,
+			je.user_remark,
+			jea.account,
+			jea.against_account,
+			jea.debit AS vat_amount
+		FROM `tabJournal Entry` je
+		INNER JOIN `tabJournal Entry Account` jea ON jea.parent = je.name
+		WHERE
+			{where_clause}
+			AND je.is_system_generated = 0
+			AND jea.account IN %(accounts)s
+			AND jea.debit > 0
+		ORDER BY je.posting_date, je.name
+		""",
+		values,
+		as_dict=True,
+	)
+	return rows
 
 
 def _classify_bucket(base_info, bucket_name):
