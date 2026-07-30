@@ -13,11 +13,11 @@
  "modified": "2026-01-13 17:23:29.430944",
  "modified_by": "Administrator",
  "module": "Zatca Vat Report",
- "name": "ZATCA VAT Report",
+ "name": "VAT Report",
  "owner": "Administrator",
  "prepared_report": 0,
  "ref_doctype": "GL Entry",
- "report_name": "ZATCA VAT Report",
+ "report_name": "VAT Report",
  "report_type": "Script Report",
  "roles": [
   {

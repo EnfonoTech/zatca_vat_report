@@ -31,7 +31,7 @@ from collections import defaultdict
 
 
 def get_detail_link(label, section, group_name, filters, bucket=None):
-    """Build a clickable <a href> link to ZATCA VAT Report Detail.
+    """Build a clickable <a href> link to VAT Report Detail.
     All filter values are encoded in the URL so Frappe's body click handler
     can populate frappe.route_options automatically (same pattern as DCR Report).
     group_name is optional (e.g. for Bayan section which has no account group).
@@ -52,7 +52,7 @@ def get_detail_link(label, section, group_name, filters, bucket=None):
         params["bucket"] = bucket
 
     query_string = urlencode({k: v for k, v in params.items() if v})
-    report_name = quote("ZATCA VAT Report Detail", safe="")
+    report_name = quote("VAT Report Detail", safe="")
     url = get_url(f"/app/query-report/{report_name}?{query_string}")
     return f'<a href="{url}">{frappe.utils.escape_html(label)}</a>'
 
