@@ -7,7 +7,7 @@ frappe.query_reports["ZATCA VAT Report Detail"] = {
 			fieldname: "section",
 			label: __("Section"),
 			fieldtype: "Select",
-			options: ["Purchase", "Sales", "Bayan"],
+			options: ["Purchase", "Sales", "Bayan", "Expense"],
 			default: "Purchase",
 			reqd: 1,
 		},
