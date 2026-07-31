@@ -34,18 +34,16 @@ def get_detail_link(label, section, group_name, filters, bucket=None):
     """Build a clickable <a href> link to VAT Report Detail.
     All filter values are encoded in the URL so Frappe's body click handler
     can populate frappe.route_options automatically (same pattern as DCR Report).
-    group_name is optional (e.g. for Bayan section which has no account group).
     """
     from urllib.parse import urlencode, quote
     from frappe.utils import get_url
 
     params = {
         "section": section,
+        "group_label": group_name,
         "from_date": filters.get("from_date", ""),
         "to_date": filters.get("to_date", ""),
     }
-    if group_name:
-        params["group_label"] = group_name
     if filters.get("company"):
         params["company"] = filters["company"]
     if bucket and section == "Purchase":
@@ -170,7 +168,7 @@ def get_expense_vat_from_expense_claims(filters, accounts):
 def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sales=True):
     """
     Calculate actual taxable amount with optimized logic:
-    
+
     1. Check if invoice has multiple tax rows
     2. If single row: Use invoice net_total directly (simple case)
     3. If multiple rows: Use reverse calculation (tax_amount / tax_rate)
@@ -226,19 +224,19 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
                 inv.name AS invoice_name,
                 inv.base_net_total,
                 inv.is_return,
-                
+
                 -- Count tax rows for this invoice
-                (SELECT COUNT(*) 
-                 FROM `{tax_table}` t2 
+                (SELECT COUNT(*)
+                 FROM `{tax_table}` t2
                  INNER JOIN `tabAccount` a2 ON t2.account_head = a2.name
                  WHERE t2.parent = inv.name AND a2.account_type = 'Tax'
                 ) AS tax_row_count,
-                
+
                 -- Calculate total taxable amount at non-zero rates (only if multiple rows)
                 IFNULL((
                     SELECT SUM(
-                        CASE 
-                            WHEN acc_master.tax_rate IS NOT NULL AND acc_master.tax_rate > 0 
+                        CASE
+                            WHEN acc_master.tax_rate IS NOT NULL AND acc_master.tax_rate > 0
                             THEN ABS(t.tax_amount) / (acc_master.tax_rate / 100)
                             ELSE 0
                         END
@@ -246,12 +244,12 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
                     FROM `{tax_table}` t
                     INNER JOIN `tabAccount` acc ON t.account_head = acc.name
                     LEFT JOIN `tabAccount` acc_master ON acc_master.name = t.account_head
-                    WHERE t.parent = inv.name 
+                    WHERE t.parent = inv.name
                       AND acc.account_type = 'Tax'
-                      AND acc_master.tax_rate IS NOT NULL 
+                      AND acc_master.tax_rate IS NOT NULL
                       AND acc_master.tax_rate > 0
                 ), 0) AS non_zero_taxed_amount
-                
+
             FROM `{tax_table}` tax
             INNER JOIN `{doctype}` inv ON tax.parent = inv.name
             INNER JOIN `tabAccount` acc ON tax.account_head = acc.name
@@ -261,12 +259,12 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
                 AND {' AND '.join(conditions)}
             GROUP BY inv.name
         """
-        
+
         results = frappe.db.sql(query, values, as_dict=True)
-        
+
         amount = 0
         adjustment = 0
-        
+
         for row in results:
             if row.get("tax_row_count", 0) == 1:
                 # Single tax row: Use invoice total directly
@@ -275,14 +273,14 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
                 # Multiple tax rows: Subtract non-zero shares from total
                 zero_rated_amount = row.get("base_net_total", 0) - row.get("non_zero_taxed_amount", 0)
                 zero_rated_amount = max(zero_rated_amount, 0)
-            
+
             if row.get("is_return", 0) == 0:
                 amount += zero_rated_amount
             else:
                 adjustment += abs(zero_rated_amount)
-        
-        return [{"account_head": accounts[0] if accounts else "Zero Rated", 
-                 "amount": amount, 
+
+        return [{"account_head": accounts[0] if accounts else "Zero Rated",
+                 "amount": amount,
                  "adjustment": adjustment}]
 
     # ---------------- STANDARD / OTHER RATES (tax_rate > 0) ----------------
@@ -296,8 +294,8 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
                         WHEN inv.is_return = 0 THEN
                             CASE
                                 -- Single tax row: Use invoice total
-                                WHEN (SELECT COUNT(*) 
-                                      FROM `{tax_table}` t2 
+                                WHEN (SELECT COUNT(*)
+                                      FROM `{tax_table}` t2
                                       INNER JOIN `tabAccount` a2 ON t2.account_head = a2.name
                                       WHERE t2.parent = inv.name AND a2.account_type = 'Tax') = 1
                                 THEN inv.base_net_total
@@ -317,8 +315,8 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
                         WHEN inv.is_return = 1 THEN
                             CASE
                                 -- Single tax row: Use invoice total
-                                WHEN (SELECT COUNT(*) 
-                                      FROM `{tax_table}` t2 
+                                WHEN (SELECT COUNT(*)
+                                      FROM `{tax_table}` t2
                                       INNER JOIN `tabAccount` a2 ON t2.account_head = a2.name
                                       WHERE t2.parent = inv.name AND a2.account_type = 'Tax') = 1
                                 THEN ABS(inv.base_net_total)
@@ -365,7 +363,6 @@ def get_purchase_vat_split(filters, accounts=None):
     conditions = [
         "inv.docstatus = 1",
         "inv.posting_date BETWEEN %(from_date)s AND %(to_date)s",
-        "COALESCE(inv.custom_bayan_value, 0) = 0",
     ]
 
     if settings.get("validate_supplier_invoice_date"):
@@ -670,37 +667,6 @@ def get_purchase_vat_split(filters, accounts=None):
 
     return result
 
-def get_bayan_totals(filters):
-    """Return amount (non-return), adjustment (return), and net for custom_bayan_value."""
-    conditions = [
-        "docstatus = 1",
-        "posting_date BETWEEN %(from_date)s AND %(to_date)s",
-        "COALESCE(custom_bayan_value, 0) != 0",
-    ]
-    values = dict(filters)
-    if filters.get("company"):
-        conditions.append("company = %(company)s")
-    where = " AND ".join(conditions)
-    rows = frappe.db.sql(
-        f"""
-        SELECT
-            SUM(CASE WHEN is_return = 0 THEN custom_bayan_value ELSE 0 END) AS amount,
-            SUM(CASE WHEN is_return = 1 THEN custom_bayan_value ELSE 0 END) AS adjustment
-        FROM `tabPurchase Invoice`
-        WHERE {where}
-        """,
-        values,
-        as_dict=True,
-    )
-    amount = flt((rows or [{}])[0].get("amount"))
-    adjustment = flt((rows or [{}])[0].get("adjustment"))
-    return {
-        "amount": amount,
-        "adjustment": adjustment,
-        "net_vat": amount - adjustment,
-    }
-
-
 def get_data(filters):
     data = []
     groups = get_account_group_map()
@@ -834,30 +800,6 @@ def get_data(filters):
         "net_vat_amount": None
     })
 
-    # ---------- BAYAN ----------
-    bayan = get_bayan_totals(filters)
-    bayan_total = bayan["net_vat"]
-
-    data.append({
-        "title": "<b>Bayan</b>",
-        "amount": None,
-        "adjustment": None,
-        "net_vat_amount": None
-    })
-    data.append({
-        "title": get_detail_link("Total Bayan Value", "Bayan", None, filters),
-        "amount": bayan["amount"],
-        "adjustment": bayan["adjustment"],
-        "net_vat_amount": 0
-    })
-
-    data.append({
-        "title": None,
-        "amount": None,
-        "adjustment": None,
-        "net_vat_amount": None
-    })
-
     # ---------- VAT ON OTHER EXPENSES ----------
     data.append({
         "title": "<b>VAT on Other Expenses</b>",
@@ -874,7 +816,7 @@ def get_data(filters):
             filters,
             info["accounts"]
         )
-        
+
         # Get VAT from Expense Claims (only if Expense Claim is present)
         ec_vat = 0
         if frappe.db.exists("DocType", "Expense Claim"):
@@ -882,7 +824,7 @@ def get_data(filters):
                 filters,
                 info["accounts"]
             )
-        
+
         # Total VAT for this expense group
         net_vat = je_vat + ec_vat
 
@@ -917,7 +859,7 @@ def get_data(filters):
         "net_vat_amount": None
     })
 
-    net_vat_due = sales_total - (purchase_total + expense_total + bayan_total)
+    net_vat_due = sales_total - (purchase_total + expense_total)
     net_amount_due = sales_total_amount - purchase_total_amount
     net_adjustment_due = sales_total_adjustment - purchase_total_adjustment
 

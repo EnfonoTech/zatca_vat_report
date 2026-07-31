@@ -10,6 +10,9 @@ def execute(filters=None):
 		filters = {}
 
 	section = (filters.get("section") or "Purchase").strip()
+	group_label = (filters.get("group_label") or "").strip()
+	if not group_label:
+		return _get_columns(section), []
 
 	if not filters.get("from_date") or not filters.get("to_date"):
 		return _get_columns(section), []
@@ -18,39 +21,27 @@ def execute(filters=None):
 	to_date = getdate(filters.get("to_date"))
 	company = (filters.get("company") or "").strip()
 
-	# Bayan section — no account group needed
-	if section == "Bayan":
-		return _get_columns("Bayan"), _get_bayan_detail(from_date, to_date, company)
-
-	group_label = (filters.get("group_label") or "").strip()
-	if not group_label:
-		return _get_columns(section), []
-
 	group = frappe.get_doc("ZATCA Account Group", group_label)
 	accounts = [r.account for r in (group.get("linked_accounts") or []) if r.account]
 
 	if section == "Sales":
-		return _get_columns("Sales"), _get_sales_detail(from_date, to_date, company, accounts)
+		columns = _get_columns("Sales")
+		data = _get_sales_detail(from_date, to_date, company, accounts)
+		return columns, data
 
 	if section == "Expense":
-		return _get_columns("Expense"), _get_expense_detail(from_date, to_date, company, accounts)
+		columns = _get_columns("Expense")
+		data = _get_expense_detail(from_date, to_date, company, accounts)
+		return columns, data
 
 	# Purchase
 	bucket = (filters.get("bucket") or "Purchase").strip()
-	return _get_columns("Purchase"), _get_purchase_detail(from_date, to_date, company, accounts, bucket)
+	columns = _get_columns("Purchase")
+	data = _get_purchase_detail(from_date, to_date, company, accounts, bucket)
+	return columns, data
 
 
 def _get_columns(section: str):
-	if section == "Bayan":
-		return [
-			{"fieldname": "invoice", "label": "Purchase Invoice", "fieldtype": "Link", "options": "Purchase Invoice", "width": 160},
-			{"fieldname": "posting_date", "label": "Posting Date", "fieldtype": "Date", "width": 110},
-			{"fieldname": "supplier_name", "label": "Supplier", "fieldtype": "Data", "width": 200},
-			{"fieldname": "tax_id", "label": "Tax ID", "fieldtype": "Data", "width": 150},
-			{"fieldname": "bayan_value", "label": "Bayan Value", "fieldtype": "Currency", "width": 140},
-			{"fieldname": "is_return", "label": "Is Return", "fieldtype": "Check", "width": 90},
-		]
-
 	if section == "Sales":
 		return [
 			{"fieldname": "invoice", "label": "Sales Invoice", "fieldtype": "Link", "options": "Sales Invoice", "width": 140},
@@ -87,35 +78,6 @@ def _get_columns(section: str):
 	]
 
 
-def _get_bayan_detail(from_date, to_date, company):
-	conditions = ["pi.docstatus = 1", "pi.posting_date BETWEEN %(from_date)s AND %(to_date)s",
-		"COALESCE(pi.custom_bayan_value, 0) != 0"]
-	values = {"from_date": from_date, "to_date": to_date}
-	if company:
-		conditions.append("pi.company = %(company)s")
-		values["company"] = company
-	where = " AND ".join(conditions)
-
-	rows = frappe.db.sql(
-		f"""
-		SELECT
-			pi.name AS invoice,
-			pi.posting_date,
-			pi.supplier_name,
-			COALESCE(sup.tax_id, '') AS tax_id,
-			pi.custom_bayan_value AS bayan_value,
-			pi.is_return
-		FROM `tabPurchase Invoice` pi
-		LEFT JOIN `tabSupplier` sup ON sup.name = pi.supplier
-		WHERE {where}
-		ORDER BY pi.posting_date, pi.name
-		""",
-		values,
-		as_dict=True,
-	)
-	return rows
-
-
 def _base_conditions(from_date, to_date, company, alias):
 	conds = [f"{alias}.docstatus = 1", f"{alias}.posting_date BETWEEN %(from_date)s AND %(to_date)s"]
 	values = {"from_date": from_date, "to_date": to_date}
@@ -123,39 +85,6 @@ def _base_conditions(from_date, to_date, company, alias):
 		conds.append(f"{alias}.company = %(company)s")
 		values["company"] = company
 	return " AND ".join(conds), values
-
-
-def _get_expense_detail(from_date, to_date, company, accounts):
-	if not accounts:
-		return []
-
-	where_clause, values = _base_conditions(from_date, to_date, company, "je")
-	values["accounts"] = tuple(accounts)
-
-	# Only debit entries are real expense VAT (see get_expense_vat_from_journal_entries
-	# in the summary report for why credits on this account are excluded).
-	rows = frappe.db.sql(
-		f"""
-		SELECT
-			je.name AS journal_entry,
-			je.posting_date,
-			je.user_remark,
-			jea.account,
-			jea.against_account,
-			jea.debit AS vat_amount
-		FROM `tabJournal Entry` je
-		INNER JOIN `tabJournal Entry Account` jea ON jea.parent = je.name
-		WHERE
-			{where_clause}
-			AND je.is_system_generated = 0
-			AND jea.account IN %(accounts)s
-			AND jea.debit > 0
-		ORDER BY je.posting_date, je.name
-		""",
-		values,
-		as_dict=True,
-	)
-	return rows
 
 
 def _get_sales_detail(from_date, to_date, company, tax_accounts):
@@ -284,6 +213,39 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 	return result
 
 
+def _get_expense_detail(from_date, to_date, company, accounts):
+	if not accounts:
+		return []
+
+	where_clause, values = _base_conditions(from_date, to_date, company, "je")
+	values["accounts"] = tuple(accounts)
+
+	# Only debit entries are real expense VAT (see get_expense_vat_from_journal_entries
+	# in the summary report for why credits on this account are excluded).
+	rows = frappe.db.sql(
+		f"""
+		SELECT
+			je.name AS journal_entry,
+			je.posting_date,
+			je.user_remark,
+			jea.account,
+			jea.against_account,
+			jea.debit AS vat_amount
+		FROM `tabJournal Entry` je
+		INNER JOIN `tabJournal Entry Account` jea ON jea.parent = je.name
+		WHERE
+			{where_clause}
+			AND je.is_system_generated = 0
+			AND jea.account IN %(accounts)s
+			AND jea.debit > 0
+		ORDER BY je.posting_date, je.name
+		""",
+		values,
+		as_dict=True,
+	)
+	return rows
+
+
 def _classify_bucket(base_info, bucket_name):
 	# base_info has purchase_base/expense_base/asset_base
 	if bucket_name == "Expense":
@@ -295,9 +257,6 @@ def _classify_bucket(base_info, bucket_name):
 
 def _get_purchase_bucket_base_map(from_date, to_date, company, validate_bill_date=False):
 	where_clause, values = _base_conditions(from_date, to_date, company, "pi")
-	# Bayan invoices are excluded from the purchase split (main report parity);
-	# they appear only in the Bayan section.
-	where_clause += " AND COALESCE(pi.custom_bayan_value, 0) = 0"
 	if validate_bill_date:
 		where_clause += " AND (pi.bill_date IS NULL OR pi.bill_date >= %(from_date)s)"
 	# Keep logic consistent with main report (account_type with parent fallback)
@@ -427,7 +386,6 @@ def _get_purchase_detail(from_date, to_date, company, tax_accounts, bucket):
 	values["accounts"] = tuple(tax_accounts)
 
 	where_clause, _ = _base_conditions(from_date, to_date, company, "pi")
-	where_clause += " AND COALESCE(pi.custom_bayan_value, 0) = 0"
 	if validate_bill_date:
 		where_clause += " AND (pi.bill_date IS NULL OR pi.bill_date >= %(from_date)s)"
 
