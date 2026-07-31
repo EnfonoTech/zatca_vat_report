@@ -41,6 +41,13 @@ def execute(filters=None):
 	return columns, data
 
 
+def _get_bayan_field():
+	"""custom_bayan_value is a per-site Custom Field (not shipped via fixture) —
+	it may not exist on every site, and where it does its fieldtype isn't
+	guaranteed (seen as Currency on one site; could be Data elsewhere)."""
+	return frappe.get_meta("Purchase Invoice").get_field("custom_bayan_value")
+
+
 def _get_columns(section: str):
 	if section == "Sales":
 		return [
@@ -65,7 +72,7 @@ def _get_columns(section: str):
 			{"fieldname": "vat_amount", "label": "VAT (Debit)", "fieldtype": "Currency", "width": 130},
 		]
 
-	return [
+	columns = [
 		{"fieldname": "invoice", "label": "Purchase Invoice", "fieldtype": "Link", "options": "Purchase Invoice", "width": 140},
 		{"fieldname": "posting_date", "label": "Posting Date", "fieldtype": "Date", "width": 110},
 		{"fieldname": "supplier_name", "label": "Supplier", "fieldtype": "Data", "width": 200},
@@ -76,6 +83,17 @@ def _get_columns(section: str):
 		{"fieldname": "grand_total", "label": "Grand Total", "fieldtype": "Currency", "width": 130},
 		{"fieldname": "is_return", "label": "Is Return", "fieldtype": "Check", "width": 90},
 	]
+
+	bayan_field = _get_bayan_field()
+	if bayan_field:
+		columns.append({
+			"fieldname": "bayan_value",
+			"label": bayan_field.label or "Bayan Value",
+			"fieldtype": bayan_field.fieldtype,
+			"width": 120,
+		})
+
+	return columns
 
 
 def _base_conditions(from_date, to_date, company, alias):
@@ -259,6 +277,11 @@ def _get_purchase_bucket_base_map(from_date, to_date, company, validate_bill_dat
 	where_clause, values = _base_conditions(from_date, to_date, company, "pi")
 	if validate_bill_date:
 		where_clause += " AND (pi.bill_date IS NULL OR pi.bill_date >= %(from_date)s)"
+
+	# custom_bayan_value may not exist on this site — select a constant NULL
+	# instead of referencing a column that could error out the whole query.
+	bayan_select = "MAX(pi.custom_bayan_value) AS bayan_value," if _get_bayan_field() else "NULL AS bayan_value,"
+
 	# Keep logic consistent with main report (account_type with parent fallback)
 	base_rows = frappe.db.sql(
 		f"""
@@ -269,6 +292,7 @@ def _get_purchase_bucket_base_map(from_date, to_date, company, validate_bill_dat
 			pi.supplier_name,
 			sup.tax_id,
 			pi.is_return,
+			{bayan_select}
 			SUM(
 				CASE
 					WHEN COALESCE(acc.account_type, acc_parent.account_type) IN (
@@ -497,6 +521,7 @@ def _get_purchase_detail(from_date, to_date, company, tax_accounts, bucket):
 				"base_amount": 0,
 				"vat_amount": 0,
 				"is_return": base_info.is_return,
+				"bayan_value": base_info.get("bayan_value"),
 			},
 		)
 		rec["base_amount"] += base_share
