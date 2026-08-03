@@ -31,7 +31,7 @@ def execute(filters=None):
 
 	if section == "Expense":
 		columns = _get_columns("Expense")
-		data = _get_expense_detail(from_date, to_date, company, accounts)
+		data = _get_expense_detail(from_date, to_date, company, accounts, group.get("tax_rate"))
 		return columns, data
 
 	# Purchase
@@ -57,12 +57,14 @@ def _get_columns(section: str):
 
 	if section == "Expense":
 		return [
-			{"fieldname": "journal_entry", "label": "Journal Entry", "fieldtype": "Link", "options": "Journal Entry", "width": 140},
+			{"fieldname": "voucher_type", "label": "Type", "fieldtype": "Data", "width": 110},
+			{"fieldname": "voucher", "label": "Reference", "fieldtype": "Dynamic Link", "options": "voucher_type", "width": 150},
 			{"fieldname": "posting_date", "label": "Posting Date", "fieldtype": "Date", "width": 110},
 			{"fieldname": "account", "label": "Account", "fieldtype": "Link", "options": "Account", "width": 180},
-			{"fieldname": "against_account", "label": "Against Account", "fieldtype": "Data", "width": 200},
-			{"fieldname": "user_remark", "label": "Remark", "fieldtype": "Data", "width": 200},
-			{"fieldname": "vat_amount", "label": "VAT (Debit)", "fieldtype": "Currency", "width": 130},
+			{"fieldname": "description", "label": "Description", "fieldtype": "Data", "width": 200},
+			{"fieldname": "base_amount", "label": "Taxable Base", "fieldtype": "Currency", "width": 140},
+			{"fieldname": "vat_amount", "label": "VAT", "fieldtype": "Currency", "width": 130},
+			{"fieldname": "grand_total", "label": "Grand Total", "fieldtype": "Currency", "width": 130},
 		]
 
 	return [
@@ -213,36 +215,85 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 	return result
 
 
-def _get_expense_detail(from_date, to_date, company, accounts):
+def _get_expense_detail(from_date, to_date, company, accounts, group_tax_rate=0):
 	if not accounts:
 		return []
 
-	where_clause, values = _base_conditions(from_date, to_date, company, "je")
-	values["accounts"] = tuple(accounts)
+	group_tax_rate = flt(group_tax_rate)
 
 	# Only debit entries are real expense VAT (see get_expense_vat_from_journal_entries
 	# in the summary report for why credits on this account are excluded).
-	rows = frappe.db.sql(
+	# Taxable base is reverse-calculated (base = vat / (rate/100)) using the
+	# account's own tax_rate first, falling back to the group's configured rate —
+	# same cascade as the summary report.
+	je_where, je_values = _base_conditions(from_date, to_date, company, "je")
+	je_values["accounts"] = tuple(accounts)
+	je_values["group_tax_rate"] = group_tax_rate
+	je_rows = frappe.db.sql(
 		f"""
 		SELECT
-			je.name AS journal_entry,
+			je.name AS voucher,
+			'Journal Entry' AS voucher_type,
 			je.posting_date,
-			je.user_remark,
 			jea.account,
-			jea.against_account,
-			jea.debit AS vat_amount
+			COALESCE(NULLIF(jea.against_account, ''), je.user_remark) AS description,
+			jea.debit AS vat_amount,
+			CASE
+				WHEN COALESCE(NULLIF(acc.tax_rate, 0), %(group_tax_rate)s) > 0
+				THEN jea.debit / (COALESCE(NULLIF(acc.tax_rate, 0), %(group_tax_rate)s) / 100)
+				ELSE 0
+			END AS base_amount
 		FROM `tabJournal Entry` je
 		INNER JOIN `tabJournal Entry Account` jea ON jea.parent = je.name
+		LEFT JOIN `tabAccount` acc ON acc.name = jea.account
 		WHERE
-			{where_clause}
+			{je_where}
 			AND je.is_system_generated = 0
 			AND jea.account IN %(accounts)s
 			AND jea.debit > 0
-		ORDER BY je.posting_date, je.name
 		""",
-		values,
+		je_values,
 		as_dict=True,
 	)
+
+	# Same source as get_expense_vat_from_expense_claims() in the summary report —
+	# guarded the same way since Expense Claim isn't installed on every site.
+	# Each tax row's own rate takes priority (most precise), then the account's
+	# tax_rate, then the group's rate.
+	ec_rows = []
+	if frappe.db.exists("DocType", "Expense Claim"):
+		ec_where, ec_values = _base_conditions(from_date, to_date, company, "ec")
+		ec_values["accounts"] = tuple(accounts)
+		ec_values["group_tax_rate"] = group_tax_rate
+		ec_rows = frappe.db.sql(
+			f"""
+			SELECT
+				ec.name AS voucher,
+				'Expense Claim' AS voucher_type,
+				ec.posting_date,
+				ect.account_head AS account,
+				ec.employee_name AS description,
+				ABS(ect.tax_amount) AS vat_amount,
+				CASE
+					WHEN COALESCE(NULLIF(ect.rate, 0), NULLIF(acc.tax_rate, 0), %(group_tax_rate)s) > 0
+					THEN ABS(ect.tax_amount) / (COALESCE(NULLIF(ect.rate, 0), NULLIF(acc.tax_rate, 0), %(group_tax_rate)s) / 100)
+					ELSE 0
+				END AS base_amount
+			FROM `tabExpense Claim` ec
+			INNER JOIN `tabExpense Taxes and Charges` ect ON ect.parent = ec.name
+			LEFT JOIN `tabAccount` acc ON acc.name = ect.account_head
+			WHERE
+				{ec_where}
+				AND ect.account_head IN %(accounts)s
+			""",
+			ec_values,
+			as_dict=True,
+		)
+
+	rows = list(je_rows) + list(ec_rows)
+	for row in rows:
+		row["grand_total"] = flt(row.get("base_amount")) + flt(row.get("vat_amount"))
+	rows.sort(key=lambda r: (r.get("posting_date") or "", r.get("voucher_type") or "", r.get("voucher") or ""))
 	return rows
 
 

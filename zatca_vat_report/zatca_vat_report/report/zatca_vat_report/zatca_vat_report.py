@@ -93,7 +93,7 @@ def get_account_group_map():
 
     return result
 
-def get_expense_vat_from_journal_entries(filters, accounts):
+def get_expense_vat_from_journal_entries(filters, accounts, tax_rate=0):
     conditions = []
     values = {}
 
@@ -111,27 +111,43 @@ def get_expense_vat_from_journal_entries(filters, accounts):
         values["accounts"] = tuple(accounts)
 
     values.update(filters)
+    values["group_tax_rate"] = tax_rate or 0
 
     # Only debit entries on the VAT account represent real new expense VAT.
     # Credits on this account are reclassifications (e.g. moving the balance
     # to VAT payable), not a reduction of expense VAT, so they're excluded.
     conditions.append("jea.debit > 0")
 
+    # Reverse-calculate the taxable base the same way Sales/Purchase do
+    # (base = vat_amount / (rate/100)), using the account's own tax_rate
+    # first and falling back to the account group's configured rate.
     query = f"""
         SELECT
-            IFNULL(SUM(jea.debit), 0) AS net_amount
+            IFNULL(SUM(jea.debit), 0) AS net_amount,
+            IFNULL(
+                SUM(
+                    CASE
+                        WHEN COALESCE(NULLIF(acc.tax_rate, 0), %(group_tax_rate)s) > 0
+                        THEN jea.debit / (COALESCE(NULLIF(acc.tax_rate, 0), %(group_tax_rate)s) / 100)
+                        ELSE 0
+                    END
+                ), 0
+            ) AS base_amount
         FROM `tabJournal Entry` je
         INNER JOIN `tabJournal Entry Account` jea
             ON jea.parent = je.name
+        LEFT JOIN `tabAccount` acc
+            ON acc.name = jea.account
         WHERE
             {' AND '.join(conditions)}
     """
 
     result = frappe.db.sql(query, values, as_dict=True)
-    return result[0].get("net_amount", 0) or 0
+    row = result[0] if result else {}
+    return {"vat_amount": row.get("net_amount", 0) or 0, "base_amount": row.get("base_amount", 0) or 0}
 
 
-def get_expense_vat_from_expense_claims(filters, accounts):
+def get_expense_vat_from_expense_claims(filters, accounts, tax_rate=0):
     conditions = []
     values = {}
 
@@ -148,21 +164,34 @@ def get_expense_vat_from_expense_claims(filters, accounts):
         values["accounts"] = tuple(accounts)
 
     values.update(filters)
+    values["group_tax_rate"] = tax_rate or 0
 
+    # Reverse-calculate the taxable base: each tax row's own rate first
+    # (most precise), then the account's tax_rate, then the group's rate.
     query = f"""
         SELECT
+            IFNULL(SUM(ABS(ect.tax_amount)), 0) AS net_amount,
             IFNULL(
-                SUM(ABS(ect.tax_amount)), 0
-            ) AS net_amount
+                SUM(
+                    CASE
+                        WHEN COALESCE(NULLIF(ect.rate, 0), NULLIF(acc.tax_rate, 0), %(group_tax_rate)s) > 0
+                        THEN ABS(ect.tax_amount) / (COALESCE(NULLIF(ect.rate, 0), NULLIF(acc.tax_rate, 0), %(group_tax_rate)s) / 100)
+                        ELSE 0
+                    END
+                ), 0
+            ) AS base_amount
         FROM `tabExpense Claim` ec
         INNER JOIN `tabExpense Taxes and Charges` ect
             ON ect.parent = ec.name
+        LEFT JOIN `tabAccount` acc
+            ON acc.name = ect.account_head
         WHERE
             {' AND '.join(conditions)}
     """
 
     result = frappe.db.sql(query, values, as_dict=True)
-    return result[0].get("net_amount", 0) or 0
+    row = result[0] if result else {}
+    return {"vat_amount": row.get("net_amount", 0) or 0, "base_amount": row.get("base_amount", 0) or 0}
 
 
 def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sales=True):
@@ -809,38 +838,47 @@ def get_data(filters):
     })
 
     expense_total = 0
+    expense_total_amount = 0
 
     for label, info in groups["Expense"].items():
+        tax_rate = info["tax_rate"] or 0
+
         # Get VAT from Journal Entries
-        je_vat = get_expense_vat_from_journal_entries(
+        je = get_expense_vat_from_journal_entries(
             filters,
-            info["accounts"]
+            info["accounts"],
+            tax_rate,
         )
-        
+
         # Get VAT from Expense Claims (only if Expense Claim is present)
-        ec_vat = 0
+        ec = {"vat_amount": 0, "base_amount": 0}
         if frappe.db.exists("DocType", "Expense Claim"):
-            ec_vat = get_expense_vat_from_expense_claims(
+            ec = get_expense_vat_from_expense_claims(
                 filters,
-                info["accounts"]
+                info["accounts"],
+                tax_rate,
             )
-        
-        # Total VAT for this expense group
-        net_vat = je_vat + ec_vat
+
+        # Total VAT and taxable base for this expense group.
+        # No return/adjustment concept applies to Journal Entries or Expense
+        # Claims (unlike invoices), so adjustment is always 0.
+        net_vat = je["vat_amount"] + ec["vat_amount"]
+        amount = je["base_amount"] + ec["base_amount"]
 
         expense_total += net_vat
+        expense_total_amount += amount
 
         data.append({
             "title": get_detail_link(label, "Expense", info.get("group_name") or label, filters),
-            "amount": None,
-            "adjustment": None,
+            "amount": amount,
+            "adjustment": 0,
             "net_vat_amount": net_vat
         })
 
     data.append({
         "title": "<b>Total Other Expenses VAT</b>",
-        "amount": None,
-        "adjustment": None,
+        "amount": expense_total_amount,
+        "adjustment": 0,
         "net_vat_amount": expense_total
     })
 
