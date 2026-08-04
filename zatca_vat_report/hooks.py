@@ -43,7 +43,18 @@ app_license = "mit"
 # page_js = {"page" : "public/js/file.js"}
 
 # include js in doctype views
-# doctype_js = {"doctype" : "public/js/doctype.js"}
+# One shared file, registered under every DocType it handles. It carries its own
+# load guard, so the tax child DocTypes never get their handlers registered twice.
+_ROW_COST_CENTER_JS = "public/js/row_cost_center.js"
+
+doctype_js = {
+	"Sales Invoice": _ROW_COST_CENTER_JS,
+	"Purchase Invoice": _ROW_COST_CENTER_JS,
+	"Sales Order": _ROW_COST_CENTER_JS,
+	"Purchase Order": _ROW_COST_CENTER_JS,
+	"Delivery Note": _ROW_COST_CENTER_JS,
+	"Purchase Receipt": _ROW_COST_CENTER_JS,
+}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
@@ -133,17 +144,37 @@ app_license = "mit"
 # 	"ToDo": "custom_app.overrides.CustomToDo"
 # }
 
+# Boot
+# ----
+# Publishes the "Sync Cost Center to Item and Tax Rows" flag to frappe.boot so the
+# client script does not need a round trip per form. Cosmetic only — the server
+# hooks below re-read the flag on every save.
+
+extend_bootinfo = ["zatca_vat_report.boot.extend_bootinfo"]
+
 # Document Events
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+# Both events, on purpose: tax rows can be appended *during* the controller's own
+# validate (AccountsController.validate -> set_taxes_and_charges ->
+# append_taxes_from_master), so one pass before validate is not enough.
+# set_missing_cost_center() only fills blanks, so running it twice is harmless, and
+# it returns immediately when the site has not opted in. See
+# zatca_vat_report/cost_center.py for the full explanation.
+_COST_CENTER_SYNC = {
+	"before_validate": "zatca_vat_report.cost_center.set_missing_cost_center",
+	"validate": "zatca_vat_report.cost_center.set_missing_cost_center",
+}
+
+doc_events = {
+	"Sales Invoice": _COST_CENTER_SYNC,
+	"Purchase Invoice": _COST_CENTER_SYNC,
+	"Sales Order": _COST_CENTER_SYNC,
+	"Purchase Order": _COST_CENTER_SYNC,
+	"Delivery Note": _COST_CENTER_SYNC,
+	"Purchase Receipt": _COST_CENTER_SYNC,
+}
 
 # Scheduled Tasks
 # ---------------

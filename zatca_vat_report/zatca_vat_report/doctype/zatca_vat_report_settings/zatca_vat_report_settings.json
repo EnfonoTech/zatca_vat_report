@@ -11,7 +11,9 @@
   "validate_supplier_invoice_date",
   "purchase_account_groups",
   "expenses_section",
-  "expense_account_groups"
+  "expense_account_groups",
+  "cost_center_section",
+  "sync_row_cost_center"
  ],
  "fields": [
   {
@@ -53,13 +55,25 @@
    "fieldtype": "Table",
    "label": "Expense Account Groups",
    "options": "ZATCA Expense Account Group Table"
+  },
+  {
+   "fieldname": "cost_center_section",
+   "fieldtype": "Section Break",
+   "label": "Cost Center"
+  },
+  {
+   "default": "0",
+   "description": "If enabled, the Cost Center on Sales Invoice, Purchase Invoice, Sales Order, Purchase Order, Delivery Note and Purchase Receipt is copied into any Item or Tax row that has none — including tax rows appended from a Taxes and Charges Template, which no client script can reach. Rows that already carry a Cost Center are left alone on save; changing the Cost Center on the form re-applies it to every row.",
+   "fieldname": "sync_row_cost_center",
+   "fieldtype": "Check",
+   "label": "Sync Cost Center to Item and Tax Rows"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-06-02 00:00:00.000000",
+ "modified": "2026-08-04 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Zatca Vat Report",
  "name": "ZATCA VAT Report Settings",
