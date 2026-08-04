@@ -46,11 +46,21 @@ BACKFILL_TARGETS = (
 def is_enabled():
 	"""True when the site opted in.
 
+	The meta check is not defensive padding — it is required. `get_single_value`
+	*throws* `Field {0} does not exist on {1}` when the fieldname is absent from
+	meta (frappe/database/database.py:840-847). Between `git pull` and
+	`bench migrate` the running workers hold new code against an unsynced DocType,
+	so without this guard every save of the six hooked DocTypes would raise. This
+	app ships to many sites, so that window exists on every one of them.
+
 	`cache=True` memoises in `frappe.db.value_cache`, which is request-local, so a
 	request that saves several invoices pays for one indexed `tabSingles` SELECT,
 	not one per save. `set_single_value` drops that key, so a flip inside the same
 	request is still seen.
 	"""
+	if not frappe.get_meta(SETTINGS_DOCTYPE).has_field(ENABLE_FIELD):
+		return False
+
 	return bool(cint(frappe.db.get_single_value(SETTINGS_DOCTYPE, ENABLE_FIELD, cache=True)))
 
 

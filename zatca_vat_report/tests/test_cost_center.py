@@ -6,6 +6,8 @@ Run:
         --module zatca_vat_report.tests.test_cost_center
 """
 
+from unittest.mock import patch
+
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
@@ -77,6 +79,22 @@ class TestCostCenterGate(FrappeTestCase):
 
 		frappe.db.set_single_value(SETTINGS_DOCTYPE, ENABLE_FIELD, 1)
 		self.assertTrue(is_enabled())
+
+	def test_unsynced_field_does_not_raise(self):
+		"""The git-pull-before-bench-migrate window.
+
+		`frappe.db.get_single_value` throws when the fieldname is not in meta, so
+		without the guard in is_enabled() every save of a hooked DocType would fail
+		between deploy and migrate.
+		"""
+		frappe.db.set_single_value(SETTINGS_DOCTYPE, ENABLE_FIELD, 1)
+		doc = _Doc(cost_center="Main - X", items=[_Row(cost_center="")], taxes=[_Row(cost_center="")])
+
+		with patch.object(frappe, "get_meta", return_value=frappe._dict(has_field=lambda f: False)):
+			self.assertFalse(is_enabled())
+			set_missing_cost_center(doc)  # must not raise
+
+		self.assertEqual(doc.items[0].cost_center, "")
 
 
 class TestCostCenterAutofill(_SettingMixin, FrappeTestCase):
