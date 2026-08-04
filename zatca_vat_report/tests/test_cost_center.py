@@ -70,7 +70,7 @@ class TestCostCenterGate(FrappeTestCase):
 
 		set_missing_cost_center(doc)
 
-		self.assertEqual(doc.items[0].cost_center, "")
+		self.assertEqual(doc.get("items")[0].cost_center, "")
 		self.assertEqual(doc.taxes[0].cost_center, "")
 
 	def test_is_enabled_tracks_the_setting(self):
@@ -94,7 +94,7 @@ class TestCostCenterGate(FrappeTestCase):
 			self.assertFalse(is_enabled())
 			set_missing_cost_center(doc)  # must not raise
 
-		self.assertEqual(doc.items[0].cost_center, "")
+		self.assertEqual(doc.get("items")[0].cost_center, "")
 
 
 class TestCostCenterAutofill(_SettingMixin, FrappeTestCase):
@@ -118,7 +118,7 @@ class TestCostCenterAutofill(_SettingMixin, FrappeTestCase):
 
 		set_missing_cost_center(doc)
 
-		self.assertEqual(doc.items[0].cost_center, "Branch A - X")
+		self.assertEqual(doc.get("items")[0].cost_center, "Branch A - X")
 		self.assertEqual(doc.taxes[0].cost_center, "Branch B - X")
 
 	def test_no_parent_cost_center_is_a_noop(self):
@@ -144,7 +144,7 @@ class TestCostCenterAutofill(_SettingMixin, FrappeTestCase):
 
 		set_missing_cost_center(doc)
 
-		self.assertEqual(doc.items[0].cost_center, "Main - X")
+		self.assertEqual(doc.get("items")[0].cost_center, "Main - X")
 
 	def test_is_idempotent_across_before_validate_and_validate(self):
 		doc = _Doc(cost_center="Main - X", items=[], taxes=[_Row(cost_center="")])
