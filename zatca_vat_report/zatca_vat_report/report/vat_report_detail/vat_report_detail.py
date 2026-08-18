@@ -41,17 +41,43 @@ def execute(filters=None):
 	return columns, data
 
 
+def _get_optional_field(doctype, fieldname):
+	"""DocField meta for fieldname on doctype, or None if this site doesn't
+	have it — used for fields that only exist on some sites (custom fields
+	not shipped via fixture, or production-only migrated data)."""
+	return frappe.get_meta(doctype).get_field(fieldname)
+
+
 def _get_bayan_field():
 	"""custom_bayan_value is a per-site Custom Field (not shipped via fixture) —
 	it may not exist on every site, and where it does its fieldtype isn't
 	guaranteed (seen as Currency on one site; could be Data elsewhere)."""
-	return frappe.get_meta("Purchase Invoice").get_field("custom_bayan_value")
+	return _get_optional_field("Purchase Invoice", "custom_bayan_value")
+
+
+# epromise_vr only exists on sites carrying data migrated from the legacy
+# "ePromise" system (production) — never on local/dev sites. Same field name
+# and value convention as sf_trading.api.statement_of_account: the field
+# holds "<source>|<number>" (e.g. "R01|501000375") and staff recognise the
+# document by the number after the pipe, not the ERPNext-generated name.
+EPROMISE_VR_FIELD = "epromise_vr"
+
+
+def _epromise_number(value):
+	text = (value or "").strip()
+	if not text:
+		return ""
+	return text.rsplit("|", 1)[-1].strip()
 
 
 def _get_columns(section: str):
 	if section == "Sales":
-		return [
+		columns = [
 			{"fieldname": "invoice", "label": "Sales Invoice", "fieldtype": "Link", "options": "Sales Invoice", "width": 140},
+		]
+		if _get_optional_field("Sales Invoice", EPROMISE_VR_FIELD):
+			columns.append({"fieldname": "epromise_vr", "label": "ePromise VR", "fieldtype": "Data", "width": 120})
+		columns += [
 			{"fieldname": "posting_date", "label": "Posting Date", "fieldtype": "Date", "width": 110},
 			{"fieldname": "customer_name", "label": "Customer", "fieldtype": "Data", "width": 200},
 			{"fieldname": "customer", "label": "Customer ID", "fieldtype": "Link", "options": "Customer", "width": 150},
@@ -61,6 +87,7 @@ def _get_columns(section: str):
 			{"fieldname": "grand_total", "label": "Grand Total", "fieldtype": "Currency", "width": 130},
 			{"fieldname": "is_return", "label": "Is Return", "fieldtype": "Check", "width": 90},
 		]
+		return columns
 
 	if section == "Expense":
 		return [
@@ -74,6 +101,11 @@ def _get_columns(section: str):
 
 	columns = [
 		{"fieldname": "invoice", "label": "Purchase Invoice", "fieldtype": "Link", "options": "Purchase Invoice", "width": 140},
+	]
+	if _get_optional_field("Purchase Invoice", EPROMISE_VR_FIELD):
+		columns.append({"fieldname": "epromise_vr", "label": "ePromise VR", "fieldtype": "Data", "width": 120})
+	columns.append({"fieldname": "bill_no", "label": "Supplier Invoice No", "fieldtype": "Data", "width": 140})
+	columns += [
 		{"fieldname": "posting_date", "label": "Posting Date", "fieldtype": "Date", "width": 110},
 		{"fieldname": "supplier_name", "label": "Supplier", "fieldtype": "Data", "width": 200},
 		{"fieldname": "tax_id", "label": "Tax ID", "fieldtype": "Data", "width": 150},
@@ -168,10 +200,13 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 			zero_rate_row_count[inv] = zero_rate_row_count.get(inv, 0) + 1
 
 	# invoice total base (use base_net_total)
+	has_epromise = bool(_get_optional_field("Sales Invoice", EPROMISE_VR_FIELD))
+	epromise_select = ", si.epromise_vr" if has_epromise else ""
 	invoice_base = {}
+	invoice_epromise = {}
 	base_rows = frappe.db.sql(
 		f"""
-		SELECT si.name AS invoice, si.base_net_total
+		SELECT si.name AS invoice, si.base_net_total{epromise_select}
 		FROM `tabSales Invoice` si
 		WHERE {where_clause}
 		""",
@@ -180,6 +215,8 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 	)
 	for r in base_rows:
 		invoice_base[r.invoice] = flt(r.base_net_total)
+		if has_epromise:
+			invoice_epromise[r.invoice] = _epromise_number(r.get("epromise_vr"))
 
 	zero_base_per_row = {}
 	for inv, total_base in invoice_base.items():
@@ -212,6 +249,7 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 			inv,
 			{
 				"invoice": inv,
+				"epromise_vr": invoice_epromise.get(inv, ""),
 				"posting_date": r.posting_date,
 				"customer_name": r.customer_name or r.customer,
 				"customer": r.customer,
@@ -278,9 +316,15 @@ def _get_purchase_bucket_base_map(from_date, to_date, company, validate_bill_dat
 	if validate_bill_date:
 		where_clause += " AND (pi.bill_date IS NULL OR pi.bill_date >= %(from_date)s)"
 
-	# custom_bayan_value may not exist on this site — select a constant NULL
-	# instead of referencing a column that could error out the whole query.
+	# custom_bayan_value / epromise_vr may not exist on this site — select a
+	# constant NULL instead of referencing a column that could error out the
+	# whole query. bill_no is a standard ERPNext field, always present.
 	bayan_select = "MAX(pi.custom_bayan_value) AS bayan_value," if _get_bayan_field() else "NULL AS bayan_value,"
+	epromise_select = (
+		"MAX(pi.epromise_vr) AS epromise_vr,"
+		if _get_optional_field("Purchase Invoice", EPROMISE_VR_FIELD)
+		else "NULL AS epromise_vr,"
+	)
 
 	# Keep logic consistent with main report (account_type with parent fallback)
 	base_rows = frappe.db.sql(
@@ -292,6 +336,8 @@ def _get_purchase_bucket_base_map(from_date, to_date, company, validate_bill_dat
 			pi.supplier_name,
 			sup.tax_id,
 			pi.is_return,
+			MAX(pi.bill_no) AS bill_no,
+			{epromise_select}
 			{bayan_select}
 			SUM(
 				CASE
@@ -514,6 +560,8 @@ def _get_purchase_detail(from_date, to_date, company, tax_accounts, bucket):
 			r.invoice,
 			{
 				"invoice": r.invoice,
+				"epromise_vr": _epromise_number(base_info.get("epromise_vr")),
+				"bill_no": base_info.get("bill_no") or "",
 				"posting_date": base_info.posting_date,
 				"supplier_name": base_info.supplier_name or base_info.supplier,
 				"tax_id": base_info.tax_id or "",
