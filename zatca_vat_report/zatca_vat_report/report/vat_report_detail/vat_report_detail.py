@@ -90,14 +90,19 @@ def _get_columns(section: str):
 		return columns
 
 	if section == "Expense":
-		return [
+		columns = [
 			{"fieldname": "journal_entry", "label": "Journal Entry", "fieldtype": "Link", "options": "Journal Entry", "width": 140},
+		]
+		if _get_optional_field("Journal Entry", EPROMISE_VR_FIELD):
+			columns.append({"fieldname": "epromise_vr", "label": "ePromise VR", "fieldtype": "Data", "width": 120})
+		columns += [
 			{"fieldname": "posting_date", "label": "Posting Date", "fieldtype": "Date", "width": 110},
 			{"fieldname": "account", "label": "Account", "fieldtype": "Link", "options": "Account", "width": 180},
 			{"fieldname": "against_account", "label": "Against Account", "fieldtype": "Data", "width": 200},
 			{"fieldname": "user_remark", "label": "Remark", "fieldtype": "Data", "width": 200},
 			{"fieldname": "vat_amount", "label": "VAT (Debit)", "fieldtype": "Currency", "width": 130},
 		]
+		return columns
 
 	columns = [
 		{"fieldname": "invoice", "label": "Purchase Invoice", "fieldtype": "Link", "options": "Purchase Invoice", "width": 140},
@@ -276,6 +281,9 @@ def _get_expense_detail(from_date, to_date, company, accounts):
 	where_clause, values = _base_conditions(from_date, to_date, company, "je")
 	values["accounts"] = tuple(accounts)
 
+	has_epromise = bool(_get_optional_field("Journal Entry", EPROMISE_VR_FIELD))
+	epromise_select = ", je.epromise_vr" if has_epromise else ""
+
 	# Only debit entries are real expense VAT (see get_expense_vat_from_journal_entries
 	# in the summary report for why credits on this account are excluded).
 	rows = frappe.db.sql(
@@ -286,7 +294,7 @@ def _get_expense_detail(from_date, to_date, company, accounts):
 			je.user_remark,
 			jea.account,
 			jea.against_account,
-			jea.debit AS vat_amount
+			jea.debit AS vat_amount{epromise_select}
 		FROM `tabJournal Entry` je
 		INNER JOIN `tabJournal Entry Account` jea ON jea.parent = je.name
 		WHERE
@@ -299,6 +307,9 @@ def _get_expense_detail(from_date, to_date, company, accounts):
 		values,
 		as_dict=True,
 	)
+	if has_epromise:
+		for row in rows:
+			row["epromise_vr"] = _epromise_number(row.get("epromise_vr"))
 	return rows
 
 
