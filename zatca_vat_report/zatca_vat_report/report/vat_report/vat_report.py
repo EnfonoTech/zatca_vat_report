@@ -4,6 +4,10 @@
 import frappe
 from frappe.utils import flt
 
+from zatca_vat_report.zatca_vat_report.report.vat_report_detail.vat_report_detail import (
+	apply_supplier_invoice_basis,
+)
+
 
 def execute(filters=None):
     if not filters:
@@ -504,7 +508,7 @@ def get_purchase_vat_split(filters, accounts=None):
     """
 
     base_rows = frappe.db.sql(base_query, values, as_dict=True)
-    base_map = {row.invoice: row for row in base_rows}
+    base_map = apply_supplier_invoice_basis({row.invoice: row for row in base_rows})
 
     if not base_map:
         return {

@@ -322,6 +322,73 @@ def _classify_bucket(base_info, bucket_name):
 	return flt(base_info.get("purchase_base"))
 
 
+
+SUPPLIER_VALUE_FLAG = "declare_purchases_at_supplier_invoice_value"
+
+
+def declare_at_supplier_invoice_value():
+	"""Whether purchases are declared at what the supplier billed, rather than at the item lines.
+
+	Read defensively: the field does not exist until `bench migrate` has synced the DocType, and a
+	report must not blow up in the window between the code landing and the migrate running.
+	"""
+	try:
+		return bool(frappe.db.get_single_value("ZATCA VAT Report Settings", SUPPLIER_VALUE_FLAG))
+	except Exception:
+		return False
+
+
+def apply_supplier_invoice_basis(base_map):
+	"""Scale each invoice's purchase/expense/asset base to the value the supplier invoiced.
+
+	Invoices migrated from ePromise carry the landed cost -- freight, customs duty and clearance --
+	inside the item rate, so the item lines total more than the supplier's own invoice. Invoices
+	raised after go-live put landed cost through a Landed Cost Voucher instead, so their lines
+	already equal the supplier value and the ratio below is exactly 1: this is a no-op for them.
+
+	The supplier value is `base_grand_total` less any VAT charged. That holds for every shape of
+	invoice on this site -- an ordinary local purchase, a migrated import whose charge rows deduct
+	from the total, and a credit note -- which a comparison against the header net total does not.
+
+	Scaling the three buckets rather than replacing the total keeps the purchase / expense / asset
+	split, which the caller derives from each item's expense account.
+	"""
+	if not base_map or not declare_at_supplier_invoice_value():
+		return base_map
+
+	names = tuple(base_map)
+	vat = dict(
+		frappe.db.sql(
+			"""
+			SELECT t.parent, SUM(COALESCE(t.base_tax_amount_after_discount_amount, t.base_tax_amount))
+			FROM `tabPurchase Taxes and Charges` t
+			INNER JOIN `tabAccount` a ON a.name = t.account_head
+			WHERE t.parent IN %(names)s AND a.account_type = 'Tax'
+			GROUP BY t.parent
+			""",
+			{"names": names},
+		)
+	)
+	grand = dict(
+		frappe.db.sql(
+			"SELECT name, base_grand_total FROM `tabPurchase Invoice` WHERE name IN %(names)s",
+			{"names": names},
+		)
+	)
+
+	for name, info in base_map.items():
+		lines = flt(info.get("purchase_base")) + flt(info.get("expense_base")) + flt(info.get("asset_base"))
+		supplier_value = flt(grand.get(name)) - flt(vat.get(name))
+		if not lines or not supplier_value:
+			continue
+		ratio = supplier_value / lines
+		if abs(ratio - 1) <= 1e-9:
+			continue
+		for field in ("purchase_base", "expense_base", "asset_base"):
+			info[field] = flt(info.get(field)) * ratio
+
+	return base_map
+
 def _get_purchase_bucket_base_map(from_date, to_date, company, validate_bill_date=False):
 	where_clause, values = _base_conditions(from_date, to_date, company, "pi")
 	if validate_bill_date:
@@ -453,7 +520,7 @@ def _get_purchase_bucket_base_map(from_date, to_date, company, validate_bill_dat
 	out = {}
 	for r in base_rows:
 		out[r.invoice] = r
-	return out, values
+	return apply_supplier_invoice_basis(out), values
 
 
 def _get_purchase_detail(from_date, to_date, company, tax_accounts, bucket):

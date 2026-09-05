@@ -9,6 +9,7 @@
   "account_groups",
   "purchase_section",
   "validate_supplier_invoice_date",
+  "declare_purchases_at_supplier_invoice_value",
   "purchase_account_groups",
   "expenses_section",
   "expense_account_groups"
@@ -36,6 +37,13 @@
    "fieldname": "validate_supplier_invoice_date",
    "fieldtype": "Check",
    "label": "Validate Supplier Invoice Date"
+  },
+  {
+   "default": "0",
+   "description": "Declare purchases at the value the supplier invoiced, rather than the value on the item lines. Migrated invoices carry freight, customs duty and clearance inside the item rate; invoices raised after go-live put those through a Landed Cost Voucher, so for them the two are identical and this setting changes nothing.",
+   "fieldname": "declare_purchases_at_supplier_invoice_value",
+   "fieldtype": "Check",
+   "label": "Declare Purchases At Supplier Invoice Value"
   },
   {
    "fieldname": "purchase_account_groups",
