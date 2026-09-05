@@ -40,15 +40,28 @@ def _base_map_for(invoice):
 	return {invoice: frappe._dict({"purchase_base": lines, "expense_base": 0.0, "asset_base": 0.0})}
 
 
-def _find(where):
-	rows = frappe.db.sql(
-		"""select pi.name, pi.base_grand_total, round(sum(pii.base_net_amount), 3) line_total
+def _find(where="", shape=None):
+	"""Invoices of a given shape, asked of SQL directly.
+
+	Scanning the first N rows and hoping one matches is how a test silently skips itself on the very
+	site it was written for: production holds 93 landed-cost invoices and a 40-row scan found none.
+	`shape` is a HAVING clause over `gap` = item lines minus what the supplier billed.
+	"""
+	having = "having %s" % shape if shape else ""
+	return frappe.db.sql(
+		"""select pi.name, pi.base_grand_total,
+		          round(sum(pii.base_net_amount), 3) line_total,
+		          round(sum(pii.base_net_amount)
+		                - (pi.base_grand_total - coalesce((
+		                    select sum(coalesce(t.base_tax_amount_after_discount_amount, t.base_tax_amount))
+		                    from `tabPurchase Taxes and Charges` t
+		                    join `tabAccount` a on a.name = t.account_head
+		                    where t.parent = pi.name and a.account_type = 'Tax'), 0)), 3) gap
 		   from `tabPurchase Invoice` pi join `tabPurchase Invoice Item` pii on pii.parent = pi.name
-		   where pi.docstatus = 1 %s
-		   group by pi.name, pi.base_grand_total limit 40""" % where,
+		   where pi.docstatus = 1 {where}
+		   group by pi.name, pi.base_grand_total {having} limit 5""".format(where=where, having=having),
 		as_dict=True,
 	)
-	return rows
 
 
 class TestSupplierInvoiceBasis(FrappeTestCase):
@@ -63,25 +76,28 @@ class TestSupplierInvoiceBasis(FrappeTestCase):
 
 	def a_migrated_invoice(self):
 		"""One whose item lines total more than the supplier billed."""
-		for r in _find(""):
-			if abs(flt(r.line_total) - _supplier_value(r.name)) > 1:
-				return r.name
-		return None
+		rows = _find(shape="abs(gap) > 1")
+		return rows[0].name if rows else None
 
 	def a_post_go_live_invoice(self):
 		"""One whose item lines already equal the supplier value."""
-		for r in _find(""):
-			if abs(flt(r.line_total) - _supplier_value(r.name)) <= 0.005 and flt(r.line_total):
-				return r.name
-		return None
+		rows = _find(shape="abs(gap) <= 0.005 and sum(pii.base_net_amount) <> 0")
+		return rows[0].name if rows else None
 
-	def test_the_switch_is_off_unless_somebody_turns_it_on(self):
-		"""Read it the way the report does. `get_single_value` THROWS on a field the site has not
-		migrated yet -- it does not return None -- which is exactly why the helper catches."""
-		self.assertFalse(
-			self._real(),
-			"the setting must default to off, so no site changes its declared figures on upgrade",
-		)
+	def test_the_switch_ships_switched_off(self):
+		"""Assert the SHIPPED default, not the current site value.
+
+		A site that has deliberately turned this on -- production has -- must not fail its own test
+		suite for doing so. What matters is that installing or upgrading the app changes nobody's
+		declared figures until a human opts in.
+		"""
+		field = frappe.get_meta("ZATCA VAT Report Settings").get_field(report.SUPPLIER_VALUE_FLAG)
+		self.assertIsNotNone(field, "the setting is missing — has bench migrate / reload_doc run?")
+		self.assertIn(str(field.default or "0"), ("0", "None"), "the setting must ship switched off")
+
+	def test_the_report_reads_whatever_the_site_has_stored(self):
+		stored = frappe.db.get_single_value("ZATCA VAT Report Settings", report.SUPPLIER_VALUE_FLAG)
+		self.assertEqual(self._real(), bool(stored))
 
 	def test_nothing_happens_while_the_switch_is_off(self):
 		name = self.a_migrated_invoice()
