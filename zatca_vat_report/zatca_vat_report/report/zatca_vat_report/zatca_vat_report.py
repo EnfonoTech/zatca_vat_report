@@ -64,32 +64,30 @@ def get_account_group_map():
         "Expense": {},
     }
 
-    # Sales groups
-    for row in settings.account_groups:
-        group = frappe.get_doc("ZATCA Account Group", row.account_group)
-        result["Sales"][group.account_group_label] = {
-            "group_name": group.name,
-            "accounts": [acc.account for acc in group.linked_accounts],
-            "tax_rate": row.tax_rate
-        }
+    # 🔴 A GROUP WITH NO LINKED ACCOUNTS IS SKIPPED, NOT REPORTED AS EMPTY.
+    # Every query below drops its account filter entirely when the list is empty
+    # (`if accounts:` at four call sites), so an accountless group would not report
+    # nothing - it would match EVERY tax row, journal entry and expense claim, and a
+    # zero-rated group would swallow the whole ledger. `ZATCA Account Group` no
+    # longer forces at least one account, so this guard is the only thing between an
+    # empty group and a wildly overstated return.
+    sections = (
+        ("Sales", settings.account_groups),
+        ("Purchase", settings.purchase_account_groups),
+        ("Expense", settings.expense_account_groups),
+    )
 
-    # Purchase groups
-    for row in settings.purchase_account_groups:
-        group = frappe.get_doc("ZATCA Account Group", row.account_group)
-        result["Purchase"][group.account_group_label] = {
-            "group_name": group.name,
-            "accounts": [acc.account for acc in group.linked_accounts],
-            "tax_rate": row.tax_rate
-        }
-
-    # Expense groups
-    for row in settings.expense_account_groups:
-        group = frappe.get_doc("ZATCA Account Group", row.account_group)
-        result["Expense"][group.account_group_label] = {
-            "group_name": group.name,
-            "accounts": [acc.account for acc in group.linked_accounts],
-            "tax_rate": row.tax_rate
-        }
+    for section, rows in sections:
+        for row in rows:
+            group = frappe.get_doc("ZATCA Account Group", row.account_group)
+            accounts = [acc.account for acc in group.linked_accounts if acc.account]
+            if not accounts:
+                continue
+            result[section][group.account_group_label] = {
+                "group_name": group.name,
+                "accounts": accounts,
+                "tax_rate": row.tax_rate,
+            }
 
     return result
 

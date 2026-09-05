@@ -24,6 +24,12 @@ def execute(filters=None):
 	group = frappe.get_doc("ZATCA Account Group", group_label)
 	accounts = [r.account for r in (group.get("linked_accounts") or []) if r.account]
 
+	# Same guard as the summary report: an accountless group must report nothing
+	# rather than everything, because these queries also drop their account filter
+	# when the list is empty.
+	if not accounts:
+		return _get_columns(section), []
+
 	if section == "Sales":
 		columns = _get_columns("Sales")
 		data = _get_sales_detail(from_date, to_date, company, accounts)
