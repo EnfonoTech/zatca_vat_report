@@ -415,6 +415,7 @@ def _get_purchase_bucket_base_map(from_date, to_date, company, validate_bill_dat
 			sup.tax_id,
 			pi.is_return,
 			MAX(pi.bill_no) AS bill_no,
+			MAX(pi.base_net_total) AS base_net_total,
 			{epromise_select}
 			{bayan_select}
 			SUM(
@@ -594,8 +595,12 @@ def _get_purchase_detail(from_date, to_date, company, tax_accounts, bucket):
 		abs_total = abs(total_base)
 		if not abs_total:
 			continue
+		# A 0% "On Net Total" row is computed against the invoice's own base_net_total, not
+		# against the (possibly supplier-invoice-value-scaled) bucket sum -- that scaling nets
+		# out any Deduct-type Actual landing-cost row after the VAT row, understating the base.
+		abs_net_total = abs(flt(base_info.get("base_net_total"))) or abs_total
 		covered = base_from_positive_rate.get(inv, 0)
-		zero_base = max(0, abs_total - covered)
+		zero_base = max(0, abs_net_total - covered)
 		n_zero = max(1, zero_rate_row_count.get(inv, 0))
 		zero_base_per_row[inv] = zero_base / n_zero  # always positive magnitude
 

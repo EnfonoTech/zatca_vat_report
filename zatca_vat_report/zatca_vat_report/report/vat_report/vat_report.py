@@ -408,6 +408,7 @@ def get_purchase_vat_split(filters, accounts=None):
         SELECT
             inv.name AS invoice,
             inv.is_return,
+            MAX(inv.base_net_total) AS base_net_total,
             SUM(
                 CASE
                     WHEN COALESCE(acc.account_type, acc_parent.account_type) IN (
@@ -580,8 +581,12 @@ def get_purchase_vat_split(filters, accounts=None):
         abs_total = abs(total_base)
         if not abs_total:
             continue
+        # A 0% "On Net Total" row is computed against the invoice's own base_net_total, not the
+        # (possibly supplier-invoice-value-scaled) bucket sum -- kept in lockstep with
+        # vat_report_detail.py's _get_purchase_detail so the two reports never disagree.
+        abs_net_total = abs(flt(base_info.get("base_net_total"))) or abs_total
         covered = base_from_positive_rate.get(inv, 0)
-        zero_base = max(0, abs_total - covered)
+        zero_base = max(0, abs_net_total - covered)
         n_zero = max(1, zero_rate_row_count.get(inv, 0))
         zero_rated_base_per_row[inv] = zero_base / n_zero  # always positive magnitude
 
