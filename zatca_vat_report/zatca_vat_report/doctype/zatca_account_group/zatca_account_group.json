@@ -31,8 +31,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Account Group Type",
-   "options": "\nSales\nPurchase",
-   "reqd": 1
+   "options": "\nSales\nPurchase"
   },
   {
    "fieldname": "tax_rate",

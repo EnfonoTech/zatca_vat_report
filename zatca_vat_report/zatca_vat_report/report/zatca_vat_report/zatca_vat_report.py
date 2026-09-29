@@ -62,6 +62,7 @@ def get_account_group_map():
         "Sales": {},
         "Purchase": {},
         "Expense": {},
+        "NetPayable": [],
     }
 
     # 🔴 A GROUP WITH NO LINKED ACCOUNTS IS SKIPPED, NOT REPORTED AS EMPTY.
@@ -89,9 +90,14 @@ def get_account_group_map():
                 "tax_rate": row.tax_rate,
             }
 
+    # Net Payable groups (accounts to exclude from Other Expenses VAT)
+    for row in settings.net_payable_account_groups:
+        group = frappe.get_doc("ZATCA Account Group", row.account_group)
+        result["NetPayable"].extend(acc.account for acc in group.linked_accounts)
+
     return result
 
-def get_expense_vat_from_journal_entries(filters, accounts, tax_rate=0):
+def get_expense_vat_from_journal_entries(filters, accounts, tax_rate=0, net_payable_accounts=None):
     conditions = []
     values = {}
 
@@ -108,25 +114,48 @@ def get_expense_vat_from_journal_entries(filters, accounts, tax_rate=0):
         conditions.append("jea.account IN %(accounts)s")
         values["accounts"] = tuple(accounts)
 
+    # Journal Entries that also settle/transfer against the configured Net
+    # Payable account (e.g. moving the balance to VAT payable) are excluded
+    # entirely — they aren't new expense VAT. Every other JE on this account
+    # still nets debit (+) against credit (-) as usual.
+    if net_payable_accounts:
+        conditions.append("""
+            NOT EXISTS (
+                SELECT 1 FROM `tabJournal Entry Account` jea2
+                WHERE jea2.parent = je.name
+                    AND jea2.account IN %(net_payable_accounts)s
+            )
+        """)
+        values["net_payable_accounts"] = tuple(net_payable_accounts)
+
     values.update(filters)
     values["group_tax_rate"] = tax_rate or 0
-
-    # Only debit entries on the VAT account represent real new expense VAT.
-    # Credits on this account are reclassifications (e.g. moving the balance
-    # to VAT payable), not a reduction of expense VAT, so they're excluded.
-    conditions.append("jea.debit > 0")
 
     # Reverse-calculate the taxable base the same way Sales/Purchase do
     # (base = vat_amount / (rate/100)), using the account's own tax_rate
     # first and falling back to the account group's configured rate.
     query = f"""
         SELECT
-            IFNULL(SUM(jea.debit), 0) AS net_amount,
+            IFNULL(
+                SUM(
+                    CASE
+                        WHEN jea.debit > 0 THEN jea.debit
+                        WHEN jea.credit > 0 THEN -jea.credit
+                        ELSE 0
+                    END
+                ), 0
+            ) AS net_amount,
             IFNULL(
                 SUM(
                     CASE
                         WHEN COALESCE(NULLIF(acc.tax_rate, 0), %(group_tax_rate)s) > 0
-                        THEN jea.debit / (COALESCE(NULLIF(acc.tax_rate, 0), %(group_tax_rate)s) / 100)
+                        THEN (
+                            CASE
+                                WHEN jea.debit > 0 THEN jea.debit
+                                WHEN jea.credit > 0 THEN -jea.credit
+                                ELSE 0
+                            END
+                        ) / (COALESCE(NULLIF(acc.tax_rate, 0), %(group_tax_rate)s) / 100)
                         ELSE 0
                     END
                 ), 0
@@ -837,6 +866,7 @@ def get_data(filters):
 
     expense_total = 0
     expense_total_amount = 0
+    net_payable_accounts = groups["NetPayable"]
 
     for label, info in groups["Expense"].items():
         tax_rate = info["tax_rate"] or 0
@@ -846,6 +876,7 @@ def get_data(filters):
             filters,
             info["accounts"],
             tax_rate,
+            net_payable_accounts,
         )
 
         # Get VAT from Expense Claims (only if Expense Claim is present)

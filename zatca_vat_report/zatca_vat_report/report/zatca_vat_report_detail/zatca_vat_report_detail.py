@@ -221,20 +221,44 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 	return result
 
 
+def _get_net_payable_accounts():
+	settings = frappe.get_single("ZATCA VAT Report Settings")
+	accounts = []
+	for row in settings.get("net_payable_account_groups") or []:
+		group = frappe.get_doc("ZATCA Account Group", row.account_group)
+		accounts.extend(r.account for r in (group.get("linked_accounts") or []) if r.account)
+	return accounts
+
+
 def _get_expense_detail(from_date, to_date, company, accounts, group_tax_rate=0):
 	if not accounts:
 		return []
 
 	group_tax_rate = flt(group_tax_rate)
 
-	# Only debit entries are real expense VAT (see get_expense_vat_from_journal_entries
-	# in the summary report for why credits on this account are excluded).
-	# Taxable base is reverse-calculated (base = vat / (rate/100)) using the
-	# account's own tax_rate first, falling back to the group's configured rate —
-	# same cascade as the summary report.
+	# Debit nets as +VAT, credit as -VAT (see get_expense_vat_from_journal_entries
+	# in the summary report). Journal Entries that also settle/transfer against a
+	# configured Net Payable account are excluded entirely — they aren't new
+	# expense VAT. Taxable base is reverse-calculated (base = vat / (rate/100))
+	# using the account's own tax_rate first, falling back to the group's
+	# configured rate — same cascade as the summary report.
+	net_payable_accounts = _get_net_payable_accounts()
+
 	je_where, je_values = _base_conditions(from_date, to_date, company, "je")
 	je_values["accounts"] = tuple(accounts)
 	je_values["group_tax_rate"] = group_tax_rate
+
+	net_payable_condition = ""
+	if net_payable_accounts:
+		net_payable_condition = """
+			AND NOT EXISTS (
+				SELECT 1 FROM `tabJournal Entry Account` jea2
+				WHERE jea2.parent = je.name
+					AND jea2.account IN %(net_payable_accounts)s
+			)
+		"""
+		je_values["net_payable_accounts"] = tuple(net_payable_accounts)
+
 	je_rows = frappe.db.sql(
 		f"""
 		SELECT
@@ -243,10 +267,20 @@ def _get_expense_detail(from_date, to_date, company, accounts, group_tax_rate=0)
 			je.posting_date,
 			jea.account,
 			COALESCE(NULLIF(jea.against_account, ''), je.user_remark) AS description,
-			jea.debit AS vat_amount,
+			CASE
+				WHEN jea.debit > 0 THEN jea.debit
+				WHEN jea.credit > 0 THEN -jea.credit
+				ELSE 0
+			END AS vat_amount,
 			CASE
 				WHEN COALESCE(NULLIF(acc.tax_rate, 0), %(group_tax_rate)s) > 0
-				THEN jea.debit / (COALESCE(NULLIF(acc.tax_rate, 0), %(group_tax_rate)s) / 100)
+				THEN (
+					CASE
+						WHEN jea.debit > 0 THEN jea.debit
+						WHEN jea.credit > 0 THEN -jea.credit
+						ELSE 0
+					END
+				) / (COALESCE(NULLIF(acc.tax_rate, 0), %(group_tax_rate)s) / 100)
 				ELSE 0
 			END AS base_amount
 		FROM `tabJournal Entry` je
@@ -256,7 +290,7 @@ def _get_expense_detail(from_date, to_date, company, accounts, group_tax_rate=0)
 			{je_where}
 			AND je.is_system_generated = 0
 			AND jea.account IN %(accounts)s
-			AND jea.debit > 0
+			{net_payable_condition}
 		""",
 		je_values,
 		as_dict=True,

@@ -12,6 +12,8 @@
   "purchase_account_groups",
   "expenses_section",
   "expense_account_groups",
+  "net_payable_section",
+  "net_payable_account_groups",
   "cost_center_section",
   "sync_row_cost_center"
  ],
@@ -55,6 +57,17 @@
    "fieldtype": "Table",
    "label": "Expense Account Groups",
    "options": "ZATCA Expense Account Group Table"
+  },
+  {
+   "fieldname": "net_payable_section",
+   "fieldtype": "Section Break",
+   "label": "Net Payable"
+  },
+  {
+   "fieldname": "net_payable_account_groups",
+   "fieldtype": "Table",
+   "label": "Net Payable Account Groups",
+   "options": "ZATCA Net Payable Account Group Table"
   },
   {
    "fieldname": "cost_center_section",
