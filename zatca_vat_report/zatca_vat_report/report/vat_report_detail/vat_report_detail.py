@@ -31,7 +31,7 @@ def execute(filters=None):
 
 	if section == "Expense":
 		columns = _get_columns("Expense")
-		data = _get_expense_detail(from_date, to_date, company, accounts)
+		data = _get_expense_detail(from_date, to_date, company, accounts, flt(group.get("tax_rate")))
 		return columns, data
 
 	# Purchase
@@ -100,6 +100,7 @@ def _get_columns(section: str):
 			{"fieldname": "account", "label": "Account", "fieldtype": "Link", "options": "Account", "width": 180},
 			{"fieldname": "against_account", "label": "Against Account", "fieldtype": "Data", "width": 200},
 			{"fieldname": "user_remark", "label": "Remark", "fieldtype": "Data", "width": 200},
+			{"fieldname": "base_amount", "label": "Taxable Base", "fieldtype": "Currency", "width": 140},
 			{"fieldname": "vat_amount", "label": "VAT (Debit)", "fieldtype": "Currency", "width": 130},
 		]
 		return columns
@@ -274,7 +275,20 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 	return result
 
 
-def _get_expense_detail(from_date, to_date, company, accounts):
+def expense_taxable_base(vat_amount, tax_rate):
+	"""The base a journal VAT debit was charged on: VAT / (rate / 100), to the fils.
+
+	A journal carries only the VAT leg, so the base is derived from the account's tax rate
+	(3.261 at 10% is 32.610). With no rate known there is nothing honest to divide by, so the base
+	is left blank rather than guessed.
+	"""
+	rate = flt(tax_rate)
+	if rate <= 0:
+		return None
+	return flt(flt(vat_amount) / (rate / 100), 3)
+
+
+def _get_expense_detail(from_date, to_date, company, accounts, fallback_rate=0):
 	if not accounts:
 		return []
 
@@ -294,9 +308,11 @@ def _get_expense_detail(from_date, to_date, company, accounts):
 			je.user_remark,
 			jea.account,
 			jea.against_account,
-			jea.debit AS vat_amount{epromise_select}
+			jea.debit AS vat_amount,
+			acc.tax_rate AS account_tax_rate{epromise_select}
 		FROM `tabJournal Entry` je
 		INNER JOIN `tabJournal Entry Account` jea ON jea.parent = je.name
+		LEFT JOIN `tabAccount` acc ON acc.name = jea.account
 		WHERE
 			{where_clause}
 			AND je.is_system_generated = 0
@@ -307,8 +323,12 @@ def _get_expense_detail(from_date, to_date, company, accounts):
 		values,
 		as_dict=True,
 	)
-	if has_epromise:
-		for row in rows:
+	for row in rows:
+		# the account's own tax rate first, the group's rate when the account carries none
+		row["base_amount"] = expense_taxable_base(
+			row.get("vat_amount"), flt(row.pop("account_tax_rate", 0)) or flt(fallback_rate)
+		)
+		if has_epromise:
 			row["epromise_vr"] = _epromise_number(row.get("epromise_vr"))
 	return rows
 
