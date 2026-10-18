@@ -247,3 +247,9 @@ app_license = "mit"
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
 
+
+# Journal Entry gets one field, "Reversal Of (Multiple Journals)", so one journal can reverse several.
+# The filter keeps the export to this field: other Custom Fields on Journal Entry belong to the site.
+fixtures = [
+	{"dt": "Custom Field", "filters": [["name", "in", ["Journal Entry-custom_reversal_of_journals"]]]},
+]

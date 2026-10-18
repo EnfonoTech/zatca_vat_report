@@ -70,6 +70,50 @@ def _epromise_number(value):
 	return text.rsplit("|", 1)[-1].strip()
 
 
+# A journal can reverse VAT it booked earlier. One journal reversed: the built-in `reversal_of`
+# (Reverse Journal Entry button). Several journals reversed by one entry, or an entry made by hand
+# and submitted already: the table field below, which can be filled after submit.
+REVERSAL_TABLE = "VAT Reversal Journal"
+REVERSAL_FIELD = "custom_reversal_of_journals"
+
+
+def _has_reversal_table():
+	"""The child table is created by `bench migrate`; a report must not fail before that has run."""
+	return bool(frappe.db.table_exists(REVERSAL_TABLE))
+
+
+def journal_reversal_condition(alias="je"):
+	"""SQL that is true when the journal is a reversal of other journals.
+
+	Only reversals may take VAT off the account. Other credits are settlements (the balance moved
+	to VAT payable at period end) and must not reduce the expense VAT.
+	"""
+	cond = f"IFNULL({alias}.reversal_of, '') != ''"
+	if _has_reversal_table():
+		cond += (
+			f" OR EXISTS (SELECT 1 FROM `tab{REVERSAL_TABLE}` vrj WHERE vrj.parent = {alias}.name"
+			f" AND vrj.parenttype = 'Journal Entry' AND vrj.parentfield = '{REVERSAL_FIELD}')"
+		)
+	return f"({cond})"
+
+
+def journal_vat_row_condition(alias="jea", journal_alias="je"):
+	"""A debit is new VAT; a credit counts only when its journal is a reversal."""
+	return f"({alias}.debit > 0 OR ({alias}.credit > 0 AND {journal_reversal_condition(journal_alias)}))"
+
+
+def _reversal_select(alias="je"):
+	"""The journals a row reverses, for the detail column."""
+	if not _has_reversal_table():
+		return f", {alias}.reversal_of AS reversal_of, NULL AS reversal_journals"
+	return (
+		f", {alias}.reversal_of AS reversal_of"
+		f", (SELECT GROUP_CONCAT(vrj2.journal_entry ORDER BY vrj2.idx SEPARATOR ', ')"
+		f" FROM `tab{REVERSAL_TABLE}` vrj2 WHERE vrj2.parent = {alias}.name"
+		f" AND vrj2.parenttype = 'Journal Entry' AND vrj2.parentfield = '{REVERSAL_FIELD}') AS reversal_journals"
+	)
+
+
 def _get_columns(section: str):
 	if section == "Sales":
 		columns = [
@@ -100,8 +144,9 @@ def _get_columns(section: str):
 			{"fieldname": "account", "label": "Account", "fieldtype": "Link", "options": "Account", "width": 180},
 			{"fieldname": "against_account", "label": "Against Account", "fieldtype": "Data", "width": 200},
 			{"fieldname": "user_remark", "label": "Remark", "fieldtype": "Data", "width": 200},
+			{"fieldname": "reversal_of", "label": "Reversal Of", "fieldtype": "Data", "width": 200},
 			{"fieldname": "base_amount", "label": "Taxable Base", "fieldtype": "Currency", "width": 140},
-			{"fieldname": "vat_amount", "label": "VAT (Debit)", "fieldtype": "Currency", "width": 130},
+			{"fieldname": "vat_amount", "label": "VAT (Net of Reversals)", "fieldtype": "Currency", "width": 130},
 		]
 		return columns
 
@@ -298,8 +343,9 @@ def _get_expense_detail(from_date, to_date, company, accounts, fallback_rate=0):
 	has_epromise = bool(_get_optional_field("Journal Entry", EPROMISE_VR_FIELD))
 	epromise_select = ", je.epromise_vr" if has_epromise else ""
 
-	# Only debit entries are real expense VAT (see get_expense_vat_from_journal_entries
-	# in the summary report for why credits on this account are excluded).
+	# A debit is real expense VAT. A credit counts only when its journal is a reversal (see
+	# journal_reversal_condition); other credits are settlements and stay out. A reversal shows
+	# as minus, so the section total is the VAT still claimed.
 	rows = frappe.db.sql(
 		f"""
 		SELECT
@@ -308,8 +354,8 @@ def _get_expense_detail(from_date, to_date, company, accounts, fallback_rate=0):
 			je.user_remark,
 			jea.account,
 			jea.against_account,
-			jea.debit AS vat_amount,
-			acc.tax_rate AS account_tax_rate{epromise_select}
+			jea.debit - jea.credit AS vat_amount,
+			acc.tax_rate AS account_tax_rate{epromise_select}{_reversal_select("je")}
 		FROM `tabJournal Entry` je
 		INNER JOIN `tabJournal Entry Account` jea ON jea.parent = je.name
 		LEFT JOIN `tabAccount` acc ON acc.name = jea.account
@@ -317,13 +363,15 @@ def _get_expense_detail(from_date, to_date, company, accounts, fallback_rate=0):
 			{where_clause}
 			AND je.is_system_generated = 0
 			AND jea.account IN %(accounts)s
-			AND jea.debit > 0
+			AND {journal_vat_row_condition("jea", "je")}
 		ORDER BY je.posting_date, je.name
 		""",
 		values,
 		as_dict=True,
 	)
 	for row in rows:
+		reversed_journals = [p for p in (row.pop("reversal_of", None), row.pop("reversal_journals", None)) if p]
+		row["reversal_of"] = ", ".join(reversed_journals)
 		# the account's own tax rate first, the group's rate when the account carries none
 		row["base_amount"] = expense_taxable_base(
 			row.get("vat_amount"), flt(row.pop("account_tax_rate", 0)) or flt(fallback_rate)

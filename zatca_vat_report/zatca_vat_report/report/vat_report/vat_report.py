@@ -6,6 +6,7 @@ from frappe.utils import flt
 
 from zatca_vat_report.zatca_vat_report.report.vat_report_detail.vat_report_detail import (
 	apply_supplier_invoice_basis,
+	journal_vat_row_condition,
 )
 
 
@@ -116,14 +117,16 @@ def get_expense_vat_from_journal_entries(filters, accounts):
 
     values.update(filters)
 
-    # Only debit entries on the VAT account represent real new expense VAT.
-    # Credits on this account are reclassifications (e.g. moving the balance
-    # to VAT payable), not a reduction of expense VAT, so they're excluded.
-    conditions.append("jea.debit > 0")
+    # A debit on the VAT account is new expense VAT. A credit is mostly a
+    # reclassification (e.g. moving the balance to VAT payable), which is not a
+    # reduction of expense VAT, so it is left out -- unless the journal is a
+    # reversal of other journals (Reversal Of, or Reversal Of (Multiple
+    # Journals)), in which case it takes its VAT back off.
+    conditions.append(journal_vat_row_condition("jea", "je"))
 
     query = f"""
         SELECT
-            IFNULL(SUM(jea.debit), 0) AS net_amount
+            IFNULL(SUM(jea.debit - jea.credit), 0) AS net_amount
         FROM `tabJournal Entry` je
         INNER JOIN `tabJournal Entry Account` jea
             ON jea.parent = je.name

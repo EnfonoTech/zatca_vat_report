@@ -1,0 +1,18 @@
+[
+ {
+  "allow_on_submit": 1,
+  "description": "Use when this entry reverses more than one journal. For a single journal use the built-in Reverse Journal Entry button, which fills Reversal Of. A reversal counts against VAT in the VAT Report.",
+  "docstatus": 0,
+  "doctype": "Custom Field",
+  "dt": "Journal Entry",
+  "fieldname": "custom_reversal_of_journals",
+  "fieldtype": "Table MultiSelect",
+  "insert_after": "reversal_of",
+  "label": "Reversal Of (Multiple Journals)",
+  "module": "Zatca Vat Report",
+  "name": "Journal Entry-custom_reversal_of_journals",
+  "no_copy": 1,
+  "options": "VAT Reversal Journal",
+  "print_hide": 1
+ }
+]
