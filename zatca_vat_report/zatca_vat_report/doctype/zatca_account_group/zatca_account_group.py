@@ -37,3 +37,9 @@ class ZATCAAccountGroup(Document):
 				row.idx = idx
 
 		self.tax_rate = flt(sum(flt(row.account_tax_rate) for row in rows) / len(rows)) if rows else 0.0
+
+		# A line-wise site zero-rates through Item Tax Templates on its one 15%
+		# account, so the account's own rate cannot describe this group. 0 routes
+		# it to the zero-rated path, which reads each line's rate (item_wise.py).
+		if self.get("zero_rated_lines"):
+			self.tax_rate = 0.0

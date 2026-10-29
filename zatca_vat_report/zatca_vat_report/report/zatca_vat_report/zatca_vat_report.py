@@ -4,6 +4,8 @@
 import frappe
 from frappe.utils import flt
 
+from zatca_vat_report import item_wise
+
 
 def execute(filters=None):
     if not filters:
@@ -273,6 +275,22 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
         account_condition = "AND tax.account_head IN %(accounts)s"
         values["accounts"] = tuple(accounts)
 
+    # Single-tax-row invoices are split line by line on each line's own rate
+    # (see zatca_vat_report/item_wise.py). The queries below then see every
+    # other invoice exactly as before.
+    item_wise_rows = item_wise.get_item_wise_rows(
+        doctype,
+        tax_table,
+        doctype.removeprefix("tab") + " Item",
+        " AND ".join(conditions),
+        values,
+        account_condition,
+    )
+    if item_wise_rows:
+        conditions.append("inv.name NOT IN %(item_wise_invoices)s")
+        values["item_wise_invoices"] = tuple(row.invoice for row in item_wise_rows)
+    item_wise_amount, item_wise_adjustment = item_wise.summarise(item_wise_rows, tax_rate)
+
     # ---------------- ZERO RATED LOGIC (tax_rate = 0) ----------------
     if tax_rate == 0:
         query = f"""
@@ -334,8 +352,11 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
                 amount += zero_rated_amount
             else:
                 adjustment += abs(zero_rated_amount)
-        
-        return [{"account_head": accounts[0] if accounts else "Zero Rated", 
+
+        amount += item_wise_amount
+        adjustment += item_wise_adjustment
+
+        return [{"account_head": accounts[0] if accounts else "Zero Rated",
                  "amount": amount, 
                  "adjustment": adjustment}]
 
@@ -400,7 +421,15 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
 
     values["expected_tax_rate"] = tax_rate
 
-    return frappe.db.sql(query, values, as_dict=True)
+    rows = frappe.db.sql(query, values, as_dict=True)
+    if item_wise_amount or item_wise_adjustment:
+        rows.append({
+            "account_head": accounts[0] if accounts else "Item-wise",
+            "amount": item_wise_amount,
+            "adjustment": item_wise_adjustment,
+        })
+
+    return rows
 
 
 def get_purchase_vat_split(filters, accounts=None):
