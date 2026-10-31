@@ -214,11 +214,18 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 		rec["base_amount"] += row_base
 		rec["vat_amount"] += vat
 
-	result = list(out_map.values())
+	result = _drop_empty_rows(out_map.values())
 	for rec in result:
 		rec["grand_total"] = flt(rec["base_amount"]) + flt(rec["vat_amount"])
 	result.sort(key=lambda x: (x.get("posting_date") or "", x.get("invoice") or ""))
 	return result
+
+
+def _drop_empty_rows(records):
+	# A 15% invoice that also carries a 0.00 "VAT 0%" tax row matches the Zero Rated
+	# group, but its zero-rated base works out to 0 (all of it is covered by the 15% row).
+	# It adds nothing to the summary, so listing it in the drill-down only confuses.
+	return [r for r in records if flt(r["base_amount"], 2) or flt(r["vat_amount"], 2)]
 
 
 def _get_net_payable_accounts():
