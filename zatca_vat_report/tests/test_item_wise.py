@@ -10,6 +10,7 @@ The shapes are taken from arkanarabia.enfonoerp.com (2026-10-29): one account
 """
 
 import unittest
+from unittest.mock import MagicMock, patch
 
 import frappe
 
@@ -131,6 +132,29 @@ class TestOutOfScope(unittest.TestCase):
 		self.assertFalse(item_wise.is_out_of_scope("Standard rate"))
 		self.assertFalse(item_wise.is_out_of_scope(None))
 		self.assertFalse(item_wise.is_out_of_scope(""))
+
+
+class TestNoTemplates(unittest.TestCase):
+	def test_site_without_templates_skips_the_split(self):
+		with (
+			patch.object(item_wise.frappe, "db", new=MagicMock(), create=True) as db,
+			patch.object(item_wise, "get_single_row_invoices") as single_rows,
+		):
+			db.exists.return_value = None
+			self.assertEqual(item_wise.get_item_wise_rows("tabSales Invoice", "t", "Sales Invoice Item", "1=1", {}), [])
+		db.exists.assert_called_once_with("Item Tax Template")
+		single_rows.assert_not_called()
+
+	def test_site_with_templates_runs_the_split(self):
+		row = frappe._dict(invoice="SINV-1", account_head=VAT, row_rate=15, base_net_total=100.0)
+		with (
+			patch.object(item_wise.frappe, "db", new=MagicMock(), create=True) as db,
+			patch.object(item_wise, "get_single_row_invoices", return_value=[row]),
+			patch.object(item_wise, "get_invoice_lines", return_value={"SINV-1": [line(100.0, ZERO)]}),
+		):
+			db.exists.return_value = "Zero Rated"
+			rows = item_wise.get_item_wise_rows("tabSales Invoice", "t", "Sales Invoice Item", "1=1", {})
+		self.assertEqual(rows[0].buckets, {0.0: 100.0})
 
 
 if __name__ == "__main__":

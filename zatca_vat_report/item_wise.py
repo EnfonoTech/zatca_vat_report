@@ -205,6 +205,12 @@ def get_invoice_lines(item_doctype, invoices):
 
 def get_item_wise_rows(doctype, tax_table, item_doctype, where_clause, values, account_condition=""):
 	"""Single-row invoices with their {rate: base} split attached as `buckets`."""
+	# Lines get `item_tax_rate` from an Item Tax Template, so a site with none
+	# reports every invoice exactly as the old path does. Skipping here saves a
+	# POS site (rms.enfonoerp.com: 27,720 invoices a month) ~7 s per report run.
+	if not frappe.db.exists("Item Tax Template"):
+		return []
+
 	invoices = get_single_row_invoices(doctype, tax_table, where_clause, values, account_condition)
 	lines = get_invoice_lines(item_doctype, [row.invoice for row in invoices])
 
