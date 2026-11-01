@@ -4,6 +4,8 @@
 import frappe
 from frappe.utils import flt, getdate
 
+from zatca_vat_report import item_wise
+
 
 def execute(filters=None):
 	if not filters:
@@ -32,7 +34,7 @@ def execute(filters=None):
 
 	if section == "Sales":
 		columns = _get_columns("Sales")
-		data = _get_sales_detail(from_date, to_date, company, accounts)
+		data = _get_sales_detail(from_date, to_date, company, accounts, group.get("tax_rate"))
 		return columns, data
 
 	if section == "Expense":
@@ -95,7 +97,7 @@ def _base_conditions(from_date, to_date, company, alias):
 	return " AND ".join(conds), values
 
 
-def _get_sales_detail(from_date, to_date, company, tax_accounts):
+def _get_sales_detail(from_date, to_date, company, tax_accounts, group_rate=0):
 	if not tax_accounts:
 		return []
 
@@ -180,12 +182,34 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 		n_zero = max(1, zero_rate_row_count.get(inv, 0))
 		zero_base_per_row[inv] = zero_base / n_zero
 
+	# Single-tax-row invoices are split line by line, exactly as the summary
+	# report does (zatca_vat_report/item_wise.py), so the drill-down adds up to it.
+	inv_where, inv_values = _base_conditions(from_date, to_date, company, "inv")
+	inv_values["accounts"] = tuple(tax_accounts)
+	item_wise_rows = {
+		r.invoice: r
+		for r in item_wise.get_item_wise_rows(
+			"tabSales Invoice",
+			"tabSales Taxes and Charges",
+			"Sales Invoice Item",
+			inv_where,
+			inv_values,
+			"AND tax.account_head IN %(accounts)s",
+		)
+	}
+
 	# Aggregate per invoice
 	out_map = {}
 	for r in rows:
 		inv = r.invoice
 		rate = flt(r.tax_rate) or 0
-		if rate > 0:
+		split = item_wise_rows.get(inv)
+		if split:
+			row_base = split.buckets.get(item_wise.rate_key(group_rate), 0.0)
+			split_vat = item_wise.bucket_vat(split.buckets, group_rate, r.base_tax_amount)
+			if not row_base and not split_vat:
+				continue
+		elif rate > 0:
 			row_base = abs(flt(r.base_tax_amount)) / (rate / 100)
 		else:
 			row_base = zero_base_per_row.get(inv, 0)
@@ -194,7 +218,7 @@ def _get_sales_detail(from_date, to_date, company, tax_accounts):
 		if r.is_return:
 			row_base = -abs(row_base)
 
-		vat = flt(r.base_tax_amount) or 0
+		vat = split_vat if split else (flt(r.base_tax_amount) or 0)
 		if r.is_return:
 			vat = -abs(vat)
 
