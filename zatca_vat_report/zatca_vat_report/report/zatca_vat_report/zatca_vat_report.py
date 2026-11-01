@@ -293,7 +293,7 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
                     SELECT SUM(
                         CASE 
                             WHEN acc_master.tax_rate IS NOT NULL AND acc_master.tax_rate > 0 
-                            THEN ABS(t.tax_amount) / (acc_master.tax_rate / 100)
+                            THEN ABS(t.base_tax_amount) / (acc_master.tax_rate / 100)
                             ELSE 0
                         END
                     )
