@@ -221,6 +221,40 @@ def get_expense_vat_from_expense_claims(filters, accounts, tax_rate=0):
     return {"vat_amount": row.get("net_amount", 0) or 0, "base_amount": row.get("base_amount", 0) or 0}
 
 
+def get_rejected_sales_invoices():
+    """Sales Invoices whose latest ZATCA submission was rejected.
+
+    Fetched once and passed to the summary query as a literal list. As a subquery
+    inside the summary it cost ~5 s on 64k POS invoices: the planner probes
+    `Sales Invoice Additional Fields` once per invoice, and every probe reads a
+    heavy row (invoice XML, QR) just to test two small columns. The rejected set
+    is a handful of names, so a list is effectively free.
+    """
+    if frappe.db.exists("DocType", "Sales Invoice Additional Fields"):
+        return frappe.db.sql_list("""
+            SELECT DISTINCT siaf.sales_invoice
+            FROM `tabSales Invoice Additional Fields` siaf
+            WHERE siaf.integration_status = 'Rejected'
+            AND siaf.is_latest = 1
+            AND siaf.sales_invoice IS NOT NULL
+        """)
+
+    if frappe.db.exists("DocType", "ZATCA Integration Log"):
+        return frappe.db.sql_list("""
+            SELECT DISTINCT zil.invoice_reference
+            FROM `tabZATCA Integration Log` zil
+            WHERE zil.status = 'Rejected'
+            AND zil.invoice_reference IS NOT NULL
+            AND zil.creation = (
+                SELECT MAX(zil2.creation)
+                FROM `tabZATCA Integration Log` zil2
+                WHERE zil2.invoice_reference = zil.invoice_reference
+            )
+        """)
+
+    return []
+
+
 def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sales=True):
     """
     Calculate actual taxable amount with optimized logic:
@@ -240,33 +274,16 @@ def get_taxable_summary(doctype, tax_table, filters, accounts, tax_rate, is_sale
     conditions.append("inv.docstatus = 1")
     conditions.append("inv.posting_date BETWEEN %(from_date)s AND %(to_date)s")
 
-    if is_sales and frappe.db.exists("DocType", "Sales Invoice Additional Fields"):
-        conditions.append("""
-            inv.name NOT IN (
-                SELECT siaf.sales_invoice
-                FROM `tabSales Invoice Additional Fields` siaf
-                WHERE siaf.integration_status = 'Rejected'
-                AND siaf.is_latest = 1
-            )
-        """)
-    elif is_sales and frappe.db.exists("DocType", "ZATCA Integration Log"):
-        conditions.append("""
-            inv.name NOT IN (
-                SELECT zil.invoice_reference
-                FROM `tabZATCA Integration Log` zil
-                WHERE zil.status = 'Rejected'
-                AND zil.creation = (
-                    SELECT MAX(zil2.creation)
-                    FROM `tabZATCA Integration Log` zil2
-                    WHERE zil2.invoice_reference = zil.invoice_reference
-                )
-            )
-        """)
+    rejected_invoices = get_rejected_sales_invoices() if is_sales else []
+    if rejected_invoices:
+        conditions.append("inv.name NOT IN %(rejected_invoices)s")
 
     # if not is_sales:
     #     conditions.append("(inv.bill_date IS NULL OR inv.bill_date >= %(from_date)s)")
 
     values.update(filters)
+    if rejected_invoices:
+        values["rejected_invoices"] = tuple(rejected_invoices)
 
     account_condition = ""
     if accounts:
